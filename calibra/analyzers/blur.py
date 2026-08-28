@@ -46,30 +46,48 @@ def compute_laplacian_variance(images: np.ndarray) -> np.ndarray:
         Variance of the discrete Laplacian response per frame. Lower values
         indicate less high-frequency detail (blurrier frames).
     """
-    imgs = np.asarray(images, dtype=np.float32)
-    if imgs.ndim not in (3, 4):
-        raise ValueError(f"images must be (T, H, W) or (T, H, W, C), got shape {imgs.shape}.")
-    gray = imgs.mean(axis=-1) if imgs.ndim == 4 else imgs
+    if images.ndim not in (3, 4):
+        raise ValueError(f"images must be (T, H, W) or (T, H, W, C), got shape {images.shape}.")
+    if len(images) == 0:
+        return np.array([], dtype=np.float32)
 
-    # Discrete Laplacian (kernel [[0,1,0],[1,-4,1],[0,1,0]]) via shifted sums —
-    # avoids a scipy/cv2 dependency, matching the rest of the ingestion-agnostic
-    # numpy-only convention (see calibra.temporal.drift.compute_visual_activity).
-    lap = (
-        -4 * gray
-        + np.roll(gray, 1, axis=1)
-        + np.roll(gray, -1, axis=1)
-        + np.roll(gray, 1, axis=2)
-        + np.roll(gray, -1, axis=2)
-    )
-    lap = lap[:, 1:-1, 1:-1]  # drop the 1px border contaminated by np.roll wraparound
-    return lap.reshape(len(gray), -1).var(axis=1)
+    T = len(images)
+    step = max(1, T // 30) if T > 30 else 1
+    indices = list(range(0, T, step))
+    variances = np.empty(len(indices), dtype=np.float32)
+
+    for i, t in enumerate(indices):
+        frame = images[t]
+        gray = frame.mean(axis=-1).astype(np.float32) if frame.ndim == 3 else frame.astype(np.float32)
+        if gray.shape[0] < 3 or gray.shape[1] < 3:
+            variances[i] = 0.0
+            continue
+        lap = (
+            gray[1:-1, 2:]
+            + gray[1:-1, :-2]
+            + gray[2:, 1:-1]
+            + gray[:-2, 1:-1]
+            - 4 * gray[1:-1, 1:-1]
+        )
+        variances[i] = float(lap.var())
+
+    return variances
 
 
 def _episode_mean_sharpness(ep: Episode) -> Optional[float]:
+    cached = getattr(ep, "_cached_sharpness", None)
+    if cached is not None:
+        return cached
+
     images = _find_image_obs(ep)
     if images is None:
         return None
-    return float(np.mean(compute_laplacian_variance(images)))
+    val = float(np.mean(compute_laplacian_variance(images)))
+    try:
+        setattr(ep, "_cached_sharpness", val)
+    except Exception:
+        pass
+    return val
 
 
 @dataclass

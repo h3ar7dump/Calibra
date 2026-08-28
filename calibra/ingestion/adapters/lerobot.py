@@ -37,7 +37,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import numpy as np
 
@@ -47,8 +47,9 @@ from calibra.schema.episode import Episode, EpisodeBatch, EpisodeMetadata
 from calibra.schema.normalization import normalize_obs_keys
 
 if TYPE_CHECKING:
-    import datasets as _hf_datasets
     import pandas as _pd
+
+    import datasets as _hf_datasets
 
 
 def _require_datasets() -> "_hf_datasets":
@@ -193,9 +194,14 @@ class LeRobotReader(DatasetReader):
             scalar_cols = self._scalar_columns(hf, ds)
             ds = ds.select_columns(scalar_cols)
             df = ds.to_pandas()
-            episodes = self._episodes_from_df(
-                df, task, path, progress_callback=self.progress_callback
-            )
+            if self.decode_images:
+                episodes = self._lazy_episodes_from_df(
+                    df, task, path, progress_callback=self.progress_callback
+                )
+            else:
+                episodes = self._episodes_from_df(
+                    df, task, path, progress_callback=self.progress_callback
+                )
         else:
             p = Path(bare)
             if (p / "meta" / "info.json").exists():
@@ -210,15 +216,27 @@ class LeRobotReader(DatasetReader):
                 scalar_cols = self._scalar_columns(hf, ds)
                 ds = ds.select_columns(scalar_cols)
                 df = ds.to_pandas()
-                episodes = self._episodes_from_df(
-                    df, task, path, progress_callback=self.progress_callback
-                )
-                return EpisodeBatch(
-                    episodes=episodes,
-                    dataset_name=p.name,
-                    format=self.format_name,
-                    source_path=path,
-                )
+                if self.decode_images:
+                    episodes = self._lazy_episodes_from_df(
+                        df, task, path, progress_callback=self.progress_callback
+                    )
+                    return EpisodeBatch(
+                        episodes=episodes,
+                        dataset_name=p.name,
+                        format=self.format_name,
+                        source_path=path,
+                        _capabilities_hint=frozenset({"actions", "timestamps", "images", "proprio"}),
+                    )
+                else:
+                    episodes = self._episodes_from_df(
+                        df, task, path, progress_callback=self.progress_callback
+                    )
+                    return EpisodeBatch(
+                        episodes=episodes,
+                        dataset_name=p.name,
+                        format=self.format_name,
+                        source_path=path,
+                    )
 
         dataset_name = bare.split("/")[-1]
         return EpisodeBatch(
@@ -258,6 +276,19 @@ class LeRobotReader(DatasetReader):
         video_resolver = None
         if self.decode_images and info:
             video_resolver = VideoDatasetResolver(p, info)
+
+        if self.decode_images:
+            episodes = self._lazy_episodes_from_df(
+                df, task, source, video_resolver=video_resolver, progress_callback=self.progress_callback
+            )
+            return EpisodeBatch(
+                episodes=episodes,
+                dataset_name=p.name,
+                format=self.format_name,
+                source_path=source,
+                extra={"fps": info.get("fps")} if info else {},
+                _capabilities_hint=frozenset({"actions", "timestamps", "images", "proprio"}),
+            )
 
         episodes = self._episodes_from_df(
             df, task, source, video_resolver=video_resolver, progress_callback=self.progress_callback
@@ -306,6 +337,19 @@ class LeRobotReader(DatasetReader):
         video_resolver = None
         if self.decode_images:
             video_resolver = VideoDatasetResolver(p, info)
+
+        if self.decode_images:
+            episodes = self._lazy_episodes_from_df(
+                df, task, source, video_resolver=video_resolver, progress_callback=self.progress_callback
+            )
+            return EpisodeBatch(
+                episodes=episodes,
+                dataset_name=p.name,
+                format=self.format_name,
+                source_path=source,
+                extra={"fps": info.get("fps")} if info else {},
+                _capabilities_hint=frozenset({"actions", "timestamps", "images", "proprio"}),
+            )
 
         episodes = self._episodes_from_df(
             df, task, source, video_resolver=video_resolver, progress_callback=self.progress_callback
@@ -442,6 +486,55 @@ class LeRobotReader(DatasetReader):
     # ── episode construction ─────────────────────────────────────────────────
 
     @staticmethod
+    def _lazy_episodes_from_df(
+        df: "_pd.DataFrame",
+        task: Optional[str],
+        source: str,
+        video_resolver: Optional[VideoDatasetResolver] = None,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    ):
+        """Build a LazyEpisodeList that decodes each episode's video frames on-demand."""
+        episode_col = "episode_index"
+        if episode_col not in df.columns:
+            raise ValueError(
+                f"Expected column '{episode_col}' in LeRobot dataset.\n"
+                f"Available columns: {list(df.columns)}"
+            )
+        groups = list(df.groupby(episode_col, sort=True))
+        total_episodes = len(groups)
+
+        cum_offsets: list[int] = []
+        curr = 0
+        for _, grp in groups:
+            cum_offsets.append(curr)
+            curr += len(grp)
+
+        def loader_fn(idx: int) -> Episode:
+            ep_id, group = groups[idx]
+            if progress_callback:
+                progress_callback(idx, total_episodes, f"Episode {ep_id}")
+            ep = LeRobotReader._episode_from_group(
+                group,
+                int(ep_id),
+                task,
+                source,
+                video_resolver=video_resolver,
+                fallback_start_frame=cum_offsets[idx],
+            )
+            if progress_callback:
+                progress_callback(idx + 1, total_episodes, f"Episode {ep_id}")
+            return ep
+
+        from calibra.schema.episode import LazyEpisodeList
+
+        return LazyEpisodeList(
+            loader_fn=loader_fn,
+            length=total_episodes,
+            cache_size=1,  # Keep at most 1 episode with decoded frames in RAM at a time
+            n_samples_hint=len(df),
+        )
+
+    @staticmethod
     def _episodes_from_df(
         df: "_pd.DataFrame",
         task: Optional[str],
@@ -504,11 +597,12 @@ class LeRobotReader(DatasetReader):
                     if decoded is not None:
                         raw_obs[key] = decoded
 
-        # Decode video columns for v2/v3 datasets when requested
+        # Attach lazy video resolvers for v2/v3 datasets when requested
+        lazy_videos: dict[str, tuple[Path, int, Optional[int]]] = {}
         if video_resolver is not None:
             for vcol in video_resolver.video_cols:
                 key = vcol.removeprefix("observation.")
-                if key not in raw_obs:
+                if key not in raw_obs and f"camera_{key}" not in raw_obs:
                     v_path, s_frame, n_frames = video_resolver.resolve_video_slice(
                         vcol,
                         ep_id,
@@ -516,13 +610,15 @@ class LeRobotReader(DatasetReader):
                         fallback_start_frame=fallback_start_frame,
                     )
                     if v_path is not None:
-                        decoded = _decode_video_frames(
-                            v_path, start_frame=s_frame, num_frames=n_frames
-                        )
-                        if decoded is not None:
-                            raw_obs[key] = decoded
+                        # Key under normalized obs key names
+                        norm_key = key if any(key.startswith(p) for p in ("camera", "cam", "rgb", "depth")) else f"camera_{key}"
+                        lazy_videos[norm_key] = (v_path, s_frame, n_frames)
 
-        obs = normalize_obs_keys(raw_obs)
+        norm_raw = normalize_obs_keys(raw_obs)
+        if lazy_videos:
+            obs = LazyObservationDict(norm_raw, lazy_videos)
+        else:
+            obs = norm_raw
 
         return Episode(
             metadata=EpisodeMetadata(
@@ -575,6 +671,57 @@ def _decode_image_column(cells: list) -> Optional[np.ndarray]:
         frames.append(np.array(img, dtype=np.uint8))
 
     return np.stack(frames)
+
+
+class LazyObservationDict(dict):
+    """
+    Observation dictionary that defers decoding video files until explicitly accessed.
+    Non-video observations are accessed instantly with zero video decoding overhead.
+    """
+
+    def __init__(
+        self,
+        raw_obs: dict[str, Any],
+        lazy_videos: dict[str, tuple[Path, int, Optional[int]]],
+    ) -> None:
+        super().__init__(raw_obs)
+        self._lazy_videos = lazy_videos
+        self._decoded_cache: dict[str, np.ndarray] = {}
+
+    def __getitem__(self, key: str) -> Any:
+        if key in self._decoded_cache:
+            return self._decoded_cache[key]
+        if key in self._lazy_videos:
+            v_path, s_f, n_f = self._lazy_videos[key]
+            decoded = _decode_video_frames(v_path, s_f, n_f)
+            if decoded is not None:
+                self._decoded_cache[key] = decoded
+                super().__setitem__(key, decoded)
+                return decoded
+        return super().__getitem__(key)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._lazy_videos or super().__contains__(key)
+
+    def __iter__(self):
+        return iter(set(super().keys()) | set(self._lazy_videos.keys()))
+
+    def keys(self):
+        return set(super().keys()) | set(self._lazy_videos.keys())
+
+    def items(self):
+        for k in self.keys():
+            yield k, self[k]
+
+    def values(self):
+        for k in self.keys():
+            yield self[k]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
 
 
 def _decode_video_frames(

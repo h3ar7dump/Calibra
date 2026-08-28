@@ -42,13 +42,28 @@ def _find_image_obs(ep: Episode) -> Optional[np.ndarray]:
     return None
 
 
-def _episode_duplicate_fraction(ep: Episode, activity_threshold: float) -> Optional[float]:
+def _get_or_compute_visual_activity(ep: Episode) -> Optional[np.ndarray]:
+    cached = getattr(ep, "_cached_visual_activity", None)
+    if cached is not None:
+        return cached
+
     images = _find_image_obs(ep)
     if images is None:
         return None
     from calibra.temporal.drift import compute_visual_activity
 
     activity = compute_visual_activity(images)
+    try:
+        setattr(ep, "_cached_visual_activity", activity)
+    except Exception:
+        pass
+    return activity
+
+
+def _episode_duplicate_fraction(ep: Episode, activity_threshold: float) -> Optional[float]:
+    activity = _get_or_compute_visual_activity(ep)
+    if activity is None:
+        return None
     return float(np.mean(activity < activity_threshold))
 
 

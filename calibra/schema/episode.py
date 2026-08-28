@@ -133,6 +133,7 @@ class EpisodeBatch:
     source_path: str
     extra: dict = field(default_factory=dict)
     _n_samples_hint: Optional[int] = field(default=None, repr=False)
+    _capabilities_hint: Optional[frozenset[str]] = field(default=None, repr=False)
 
     @property
     def n_episodes(self) -> int:
@@ -150,6 +151,10 @@ class EpisodeBatch:
     @property
     def modalities(self) -> set[str]:
         keys: set[str] = set()
+        if isinstance(self.episodes, LazyEpisodeList) and len(self.episodes) > 0:
+            # Probe first episode to avoid materialising all lazy episodes
+            keys.update(self.episodes[0].observations.keys())
+            return keys
         for ep in self.episodes:
             keys.update(ep.observations.keys())
         return keys
@@ -165,6 +170,9 @@ class EpisodeBatch:
         gated analyzer already uses internally, so a capability tag is only
         reported present when that analyzer would actually find data.
         """
+        if self._capabilities_hint is not None:
+            return self._capabilities_hint
+
         caps = {"actions", "timestamps"}
         keys = {k.lower() for k in self.modalities}
         if any(tok in k for k in keys for tok in _IMAGE_TOKENS):
@@ -173,13 +181,19 @@ class EpisodeBatch:
             caps.add("proprio")
         if any(tok in k for k in keys for tok in _FORCE_TORQUE_TOKENS):
             caps.add("force_torque")
-        if any(ep.metadata.task_description for ep in self.episodes):
+
+        probe_eps = (
+            [self.episodes[0]]
+            if isinstance(self.episodes, LazyEpisodeList) and len(self.episodes) > 0
+            else self.episodes
+        )
+        if any(ep.metadata.task_description for ep in probe_eps):
             caps.add("task_description")
-        if any(ep.metadata.success is not None for ep in self.episodes):
+        if any(ep.metadata.success is not None for ep in probe_eps):
             caps.add("success_label")
-        if any(ep.obs_timestamps for ep in self.episodes):
+        if any(ep.obs_timestamps for ep in probe_eps):
             caps.add("obs_timestamps")
-        if any(ep.action_timestamps is not None for ep in self.episodes):
+        if any(ep.action_timestamps is not None for ep in probe_eps):
             caps.add("action_timestamps")
         return frozenset(caps)
 

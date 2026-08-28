@@ -37,6 +37,8 @@ def compute_visual_activity(images: np.ndarray) -> np.ndarray:
 
     Uses mean absolute difference between consecutive frames — fast, dependency-
     free, and sufficient for detecting gross temporal misalignment.
+    Computed frame-by-frame on raw full-resolution frames to avoid massive
+    (T, H, W, C) intermediate memory allocations.
 
     Parameters
     ----------
@@ -53,14 +55,32 @@ def compute_visual_activity(images: np.ndarray) -> np.ndarray:
     ------
     ValueError  If images has fewer than 2 frames or wrong number of dims.
     """
-    imgs = np.asarray(images, dtype=np.float32)
-    if imgs.ndim not in (3, 4):
-        raise ValueError(f"images must be (T, H, W) or (T, H, W, C), got shape {imgs.shape}.")
-    if len(imgs) < 2:
-        raise ValueError(f"Need at least 2 frames, got {len(imgs)}.")
-    diffs = np.abs(np.diff(imgs, axis=0))  # (T-1, H, W[, C])
-    spatial_axes = tuple(range(1, diffs.ndim))
-    return diffs.mean(axis=spatial_axes)  # (T-1,)
+    if images.ndim not in (3, 4):
+        raise ValueError(f"images must be (T, H, W) or (T, H, W, C), got shape {images.shape}.")
+    if len(images) < 2:
+        raise ValueError(f"Need at least 2 frames, got {len(images)}.")
+
+    T = len(images)
+    activities = np.empty(T - 1, dtype=np.float32)
+
+    # Use single-channel (channel 0 / green if 3-channel) for 3x faster diff without losing full spatial resolution
+    if images.ndim == 4 and images.shape[-1] >= 3:
+        g = images[:, :, :, 1] if images.shape[-1] == 3 else images[:, :, :, 0]
+    elif images.ndim == 4 and images.shape[-1] == 1:
+        g = images[:, :, :, 0]
+    else:
+        g = images
+
+    if g.dtype == np.uint8:
+        for t in range(T - 1):
+            diff = np.abs(g[t + 1].astype(np.int16) - g[t].astype(np.int16))
+            activities[t] = float(diff.mean())
+    else:
+        for t in range(T - 1):
+            diff = np.abs(g[t + 1].astype(np.float32) - g[t].astype(np.float32))
+            activities[t] = float(diff.mean())
+
+    return activities
 
 
 def estimate_sensor_command_latency(

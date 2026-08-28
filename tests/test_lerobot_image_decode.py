@@ -446,7 +446,8 @@ class TestLeRobotV3VideoDecoding:
         path = _make_v2_dataset(tmp_path)
         reader = LeRobotReader(decode_images=True, progress_callback=callback)
         batch = reader.read(path)
-        assert len(batch.episodes) == 6
+        episodes = list(batch.episodes)
+        assert len(episodes) == 6
         assert len(calls) > 0
         # Final call should report current == total == 6
         assert calls[-1][0] == 6

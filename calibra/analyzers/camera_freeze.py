@@ -18,7 +18,6 @@ from typing import Optional
 import numpy as np
 
 from calibra.analyzers.base import Analyzer
-from calibra.analyzers.duplicate_frame import _find_image_obs
 from calibra.analyzers.task_structure import _threshold_level_upper
 from calibra.schema.episode import Episode, EpisodeBatch
 from calibra.schema.report import AnalyzerResult, ObservedValue, RiskFlag, RiskLevel
@@ -41,12 +40,11 @@ def _max_run_length(mask: np.ndarray) -> int:
 
 
 def _episode_freeze_run(ep: Episode, activity_threshold: float) -> Optional[int]:
-    images = _find_image_obs(ep)
-    if images is None:
-        return None
-    from calibra.temporal.drift import compute_visual_activity
+    from calibra.analyzers.duplicate_frame import _get_or_compute_visual_activity
 
-    activity = compute_visual_activity(images)
+    activity = _get_or_compute_visual_activity(ep)
+    if activity is None:
+        return None
     return _max_run_length(activity < activity_threshold)
 
 

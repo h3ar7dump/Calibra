@@ -544,6 +544,14 @@ class TemporalAnalyzer(Analyzer):
             RiskFlag with metric "camera_physics_drift" and lag in frames, or
             None if prerequisites are not met.
         """
+        # Quick precheck to avoid materializing lazy video episodes if no joint velocity exists
+        has_joint_vel = any(
+            any(vk in k.lower() for vk in _JOINT_VEL_KEYS)
+            for k in batch.modalities
+        )
+        if not has_joint_vel:
+            return None, None
+
         from calibra.temporal.drift import compute_visual_activity, estimate_sensor_command_latency
 
         lag_samples: list[int] = []
