@@ -661,24 +661,46 @@ class VideoDatasetResolver:
         self.codebase_version = str(info.get("codebase_version", "v2.0")).lower()
         self.fps = float(info.get("fps", 30.0))
         self.video_cols = _image_columns_from_info(info)
-        self.episodes_meta = self._load_episodes_jsonl()
+        self.episodes_meta = self._load_episodes_meta()
         self._cumulative_offsets = self._build_cumulative_offsets()
 
-    def _load_episodes_jsonl(self) -> dict[int, dict]:
+    def _load_episodes_meta(self) -> dict[int, dict]:
         episodes_path = self.root / "meta" / "episodes.jsonl"
-        if not episodes_path.exists():
-            return {}
-        result = {}
-        with open(episodes_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                record = json.loads(line)
-                ep_id = record.get("episode_index")
-                if ep_id is not None:
-                    result[int(ep_id)] = record
-        return result
+        if episodes_path.exists():
+            result = {}
+            with open(episodes_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    record = json.loads(line)
+                    ep_id = record.get("episode_index")
+                    if ep_id is not None:
+                        result[int(ep_id)] = record
+            return result
+
+        # Also support LeRobot v3 Parquet meta: meta/episodes/**/*.parquet or meta/episodes.parquet
+        pq_files = sorted(self.root.glob("meta/episodes/**/*.parquet"))
+        if not pq_files:
+            pq_files = sorted(self.root.glob("meta/episodes.parquet"))
+            if not pq_files:
+                pq_files = sorted(self.root.glob("meta/episodes/*.parquet"))
+        if pq_files:
+            try:
+                import pyarrow.parquet as pq
+
+                result = {}
+                for pf in pq_files:
+                    df = pq.read_table(str(pf)).to_pandas()
+                    for _, row in df.iterrows():
+                        ep_id = row.get("episode_index")
+                        if ep_id is not None:
+                            result[int(ep_id)] = row.to_dict()
+                return result
+            except Exception:
+                pass
+
+        return {}
 
     def _build_cumulative_offsets(self) -> dict[int, tuple[int, int]]:
         offsets = {}
@@ -711,8 +733,42 @@ class VideoDatasetResolver:
         if not video_root.exists():
             return None, 0, ep_len
 
-        chunk_dirs = sorted(video_root.glob("chunk-*"))
-        search_dirs = chunk_dirs + [video_root]
+        meta = self.episodes_meta.get(ep_id, {})
+        video_path_tpl = self.info.get("video_path")
+
+        # 0. Try info.json video_path template with episode metadata indices
+        if video_path_tpl:
+            for cname in col_names:
+                chunk_idx = (
+                    meta.get(f"videos/{col}/chunk_index")
+                    or meta.get(f"videos/{cname}/chunk_index")
+                    or meta.get("data/chunk_index")
+                    or meta.get("chunk_index")
+                    or 0
+                )
+                file_idx = (
+                    meta.get(f"videos/{col}/file_index")
+                    or meta.get(f"videos/{cname}/file_index")
+                    or meta.get("data/file_index")
+                    or meta.get("file_index")
+                    or 0
+                )
+                try:
+                    rel_path = video_path_tpl.format(
+                        video_key=cname,
+                        chunk_index=int(chunk_idx),
+                        file_index=int(file_idx),
+                    )
+                    cand = self.root / rel_path
+                    if cand.is_file():
+                        start_f, length = self._get_v3_slice(
+                            col, ep_id, ep_len, fallback_start_frame
+                        )
+                        return cand, start_f, length
+                except (KeyError, ValueError):
+                    pass
+
+        search_dirs = [video_root] + sorted(video_root.glob("chunk-*"))
 
         # 1. Try v2 layout: per-episode video file
         for sdir in search_dirs:
@@ -730,7 +786,20 @@ class VideoDatasetResolver:
                             if cand.is_file():
                                 return cand, 0, ep_len
 
-        # 2. Try v3 layout: chunk-concatenated video files
+        # 2. Try v3 chunk layout: recursive videos/{cname}/**/*.mp4 or videos/chunk-*/**/*.mp4
+        for sdir in search_dirs:
+            for cname in col_names:
+                col_dir = sdir / cname
+                if col_dir.is_dir():
+                    for ext in exts:
+                        for cand in sorted(col_dir.glob(f"**/*{ext}")):
+                            if cand.is_file() and "episode" not in cand.name:
+                                start_f, length = self._get_v3_slice(
+                                    col, ep_id, ep_len, fallback_start_frame
+                                )
+                                return cand, start_f, length
+
+        # 3. Direct videos/{cname}.mp4 or videos/chunk-*/{cname}.mp4
         for sdir in search_dirs:
             for cname in col_names:
                 for ext in exts:
@@ -741,38 +810,35 @@ class VideoDatasetResolver:
                         )
                         return cand, start_f, length
 
-                    col_dir = sdir / cname
-                    if col_dir.is_dir():
-                        for chunk_cand in sorted(col_dir.glob(f"*{ext}")):
-                            if "episode" not in chunk_cand.name:
-                                start_f, length = self._get_v3_slice(
-                                    col, ep_id, ep_len, fallback_start_frame
-                                )
-                                return chunk_cand, start_f, length
-
         return None, 0, ep_len
 
     def _get_v3_slice(
         self, col: str, ep_id: int, ep_len: Optional[int], fallback_start: int
     ) -> tuple[int, Optional[int]]:
         meta = self.episodes_meta.get(ep_id, {})
-        for k in (f"videos/{col}/from_frame", f"videos.{col}.from_frame", "from_frame"):
-            if k in meta:
-                start_f = int(meta[k])
-                to_f = int(meta.get(k.replace("from_frame", "to_frame"), start_f + (ep_len or 0)))
-                return start_f, max(0, to_f - start_f)
+        col_names = [col]
+        for prefix in ("observation.images.", "observation.", "images."):
+            if col.startswith(prefix):
+                col_names.append(col.removeprefix(prefix))
 
-        for k in (
-            f"videos/{col}/from_timestamp",
-            f"videos.{col}.from_timestamp",
-            "from_timestamp",
-        ):
-            if k in meta:
-                from_ts = float(meta[k])
-                to_ts = float(meta.get(k.replace("from_timestamp", "to_timestamp"), from_ts))
-                start_f = int(round(from_ts * self.fps))
-                num_f = int(round((to_ts - from_ts) * self.fps))
-                return start_f, num_f or ep_len
+        for c in col_names:
+            for k in (f"videos/{c}/from_frame", f"videos.{c}.from_frame", "from_frame"):
+                if k in meta and meta[k] is not None:
+                    start_f = int(meta[k])
+                    to_f = int(meta.get(k.replace("from_frame", "to_frame"), start_f + (ep_len or 0)))
+                    return start_f, max(0, to_f - start_f)
+
+            for k in (
+                f"videos/{c}/from_timestamp",
+                f"videos.{c}.from_timestamp",
+                "from_timestamp",
+            ):
+                if k in meta and meta[k] is not None:
+                    from_ts = float(meta[k])
+                    to_ts = float(meta.get(k.replace("from_timestamp", "to_timestamp"), from_ts))
+                    start_f = int(round(from_ts * self.fps))
+                    num_f = int(round((to_ts - from_ts) * self.fps))
+                    return start_f, num_f or ep_len
 
         if ep_id in self._cumulative_offsets:
             start_f, length = self._cumulative_offsets[ep_id]
