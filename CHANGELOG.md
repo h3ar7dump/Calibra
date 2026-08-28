@@ -2,6 +2,12 @@
 
 All notable changes to Calibra are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **LeRobot v2/v3 video decoding support** (`--decode-images`) — `LeRobotReader(decode_images=True)` and `calibra integrity --decode-images` now support LeRobot v2 (per-episode `.mp4` video files) and v3 (chunk-concatenated video files with `episodes.jsonl` slice offsets). Unlocks visual integrity diagnostics (`duplicate_frame_rate`, `camera_freeze_events`, `blurry_episode_fraction`) for modern LeRobot video datasets. Supports PyAV (`av`) and OpenCV (`cv2`) backends.
+
 ## [0.8.0] — Measured training results
 
 Calibra's predictions (`calibra benchmark`) were always simulated — a heuristic outcome model plus linear GPU-hour scaling. That's useful for a first pass, but not evidence. This adds the other half: a way to record what a design partner's *real* training runs actually cost and achieved, and to fold those measured numbers into the benchmark report wherever they're available, so a report is never presented as a validated result when parts of it are still predictions.

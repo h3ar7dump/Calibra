@@ -181,10 +181,9 @@ def run_integrity(argv: list[str]) -> None:
         "--decode-images",
         action="store_true",
         help=(
-            "Decode camera frames for LeRobot v1 (HuggingFace Image-feature) "
+            "Decode camera frames for LeRobot (v1 Image features, v2/v3 mp4 videos) "
             "datasets so duplicate_frame_rate/camera_freeze_events/blurry_episode_fraction "
-            "can run. LeRobot-specific; increases load time and memory use. "
-            "Not yet supported for v2/v3 (video-encoded) LeRobot datasets."
+            "can run. LeRobot-specific; increases load time and memory use."
         ),
     )
     p.add_argument(

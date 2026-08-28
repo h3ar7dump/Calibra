@@ -21,21 +21,21 @@ Supports:
                       (fast path: DuckDB reads Parquet directly without
                        loading image columns into RAM)
 
-Image feature columns are skipped by default for performance. On the v1 path
-(HuggingFace Hub / local `datasets`-saved directories) they can be decoded
-instead via `LeRobotReader(decode_images=True)` — opt-in, since it changes
-load time and memory characteristics. v2/v3 (video-encoded) datasets don't
-support this yet; see `_read_local_v2_duckdb`/`_read_local_v2_pyarrow`.
+Image feature columns are skipped by default for performance. They can be
+decoded instead via `LeRobotReader(decode_images=True)` — opt-in, since it
+changes load time and memory characteristics.
+  - v1 datasets: Decodes HuggingFace `Image`-feature columns into (T, H, W, C) arrays.
+  - v2/v3 datasets: Decodes per-episode or chunk-concatenated `.mp4` video files
+    referenced in `videos/` into (T, H, W, C) uint8 RGB arrays.
 
 Dependencies:
-  pip install 'calibra[lerobot]'  (datasets, pyarrow, duckdb, pillow)
+  pip install 'calibra[lerobot]'  (datasets, pyarrow, duckdb, pillow, av/opencv-python)
 """
 
 from __future__ import annotations
 
 import io
 import json
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -87,6 +87,34 @@ def _require_pillow():
         ) from None
 
 
+def _require_video_decoder():
+    """
+    Check and return an available video decoding backend ('av', 'cv2', or 'imageio').
+    """
+    try:
+        import av
+
+        return "av", av
+    except ImportError:
+        pass
+    try:
+        import cv2
+
+        return "cv2", cv2
+    except ImportError:
+        pass
+    try:
+        import imageio.v3 as iio
+
+        return "imageio", iio
+    except ImportError:
+        pass
+    raise ImportError(
+        "A video decoding library (PyAV or OpenCV) is required to decode LeRobot v2/v3 videos.\n"
+        "Install it with: pip install av  or  pip install opencv-python"
+    )
+
+
 def _is_hub_uri(path: str) -> bool:
     """True for 'hf://lerobot/pusht' style URIs."""
     return path.startswith("hf://")
@@ -122,11 +150,10 @@ class LeRobotReader(DatasetReader):
 
     Parameters
     ----------
-    decode_images : if True, decode HuggingFace `Image`-feature columns into
-                     (T, H, W, C) uint8 arrays instead of excluding them.
-                     Only applies to the v1 path (Hub / local `datasets`-saved
-                     directories) — opt-in because it increases load time and
-                     memory use. v2/v3 (video-encoded) datasets are unaffected.
+    decode_images : if True, decode HuggingFace `Image`-feature columns (v1)
+                     or video files in `videos/` (v2/v3) into (T, H, W, C) uint8
+                     arrays instead of excluding them. Opt-in because it increases
+                     load time and memory use.
     """
 
     def __init__(self, decode_images: bool = False) -> None:
@@ -163,12 +190,6 @@ class LeRobotReader(DatasetReader):
             p = Path(bare)
             if (p / "meta" / "info.json").exists():
                 # v2/v3 format (meta/info.json + Parquet shards): DuckDB fast path, pyarrow fallback
-                if self.decode_images:
-                    print(
-                        "warning: --decode-images is not yet supported for v2/v3 "
-                        "(video-encoded) LeRobot datasets; images will still be excluded.",
-                        file=sys.stderr,
-                    )
                 try:
                     return self._read_local_v2_duckdb(p, path)
                 except ImportError:
@@ -199,11 +220,11 @@ class LeRobotReader(DatasetReader):
 
     def _read_local_v2_duckdb(self, p: Path, source: str) -> EpisodeBatch:
         """
-        Read a v2 LeRobot dataset (meta/info.json + Parquet shards) using DuckDB.
+        Read a v2/v3 LeRobot dataset (meta/info.json + Parquet shards) using DuckDB.
 
         Advantages over the HuggingFace datasets path:
           - Reads Parquet natively; no Python object conversion overhead.
-          - Image columns are excluded via a SQL projection before any data
+          - Image/video columns are excluded via a SQL projection before any data
             leaves the Parquet pages — they never enter RAM.
           - Global aggregate queries (episode count, action bounds) run in
             under a second on multi-terabyte datasets via DuckDB's push-down.
@@ -216,7 +237,15 @@ class LeRobotReader(DatasetReader):
         df = conn.execute("SELECT * FROM dataset").df()
         conn.close()
 
-        episodes = self._episodes_from_df(df, task, source)
+        video_resolver = None
+        if self.decode_images:
+            info_path = p / "meta" / "info.json"
+            if info_path.exists():
+                with open(info_path, encoding="utf-8") as f:
+                    info = json.load(f)
+                video_resolver = VideoDatasetResolver(p, info)
+
+        episodes = self._episodes_from_df(df, task, source, video_resolver=video_resolver)
         return EpisodeBatch(
             episodes=episodes,
             dataset_name=p.name,
@@ -226,7 +255,7 @@ class LeRobotReader(DatasetReader):
 
     def _read_local_v2_pyarrow(self, p: Path, source: str) -> EpisodeBatch:
         """
-        Fallback reader for v2 LeRobot datasets when DuckDB is not installed.
+        Fallback reader for v2/v3 LeRobot datasets when DuckDB is not installed.
 
         Uses pyarrow.parquet with column projection to exclude image columns,
         so image bytes never enter RAM even without DuckDB.
@@ -234,7 +263,7 @@ class LeRobotReader(DatasetReader):
         import pyarrow.parquet as pq
 
         info_path = p / "meta" / "info.json"
-        with open(info_path) as f:
+        with open(info_path, encoding="utf-8") as f:
             info = json.load(f)
 
         image_cols = _image_columns_from_info(info)
@@ -257,7 +286,11 @@ class LeRobotReader(DatasetReader):
         df = df.sort_values(["episode_index", "frame_index"]).reset_index(drop=True)
 
         task = _read_task_v2(p)
-        episodes = self._episodes_from_df(df, task, source)
+        video_resolver = None
+        if self.decode_images:
+            video_resolver = VideoDatasetResolver(p, info)
+
+        episodes = self._episodes_from_df(df, task, source, video_resolver=video_resolver)
         return EpisodeBatch(
             episodes=episodes,
             dataset_name=p.name,
@@ -274,26 +307,26 @@ class LeRobotReader(DatasetReader):
         Each episode is fetched with a single SQL WHERE clause, so only that
         episode's rows are transferred from Parquet into Python memory.
 
-        Usage::
-
-            reader = LeRobotReader()
-            for ep in reader.iter_episodes_lazy("/data/droid"):
-                result = TemporalAnalyzer().analyze_episode(ep)
-                ...
-
         Parameters
         ----------
-        path : local v2 dataset directory (must have meta/info.json).
+        path : local v2/v3 dataset directory (must have meta/info.json).
                Hub IDs and v1 formats are not supported by this method.
         """
         p = Path(_strip_hf_prefix(path))
-        if not (p / "meta" / "info.json").exists():
+        info_path = p / "meta" / "info.json"
+        if not info_path.exists():
             raise ValueError(
                 f"iter_episodes_lazy requires a v2 local dataset (meta/info.json). "
                 f"'{path}' does not appear to be v2 format."
             )
         conn = self._build_duckdb_conn(p)
         task = _read_task_v2(p)
+
+        video_resolver = None
+        if self.decode_images:
+            with open(info_path, encoding="utf-8") as f:
+                info = json.load(f)
+            video_resolver = VideoDatasetResolver(p, info)
 
         episode_ids: list[int] = [
             row[0]
@@ -306,7 +339,7 @@ class LeRobotReader(DatasetReader):
             df = conn.execute(
                 f"SELECT * FROM dataset WHERE episode_index = {ep_id} ORDER BY frame_index"
             ).df()
-            yield self._episode_from_group(df, ep_id, task, path)
+            yield self._episode_from_group(df, ep_id, task, path, video_resolver=video_resolver)
 
         conn.close()
 
@@ -393,6 +426,7 @@ class LeRobotReader(DatasetReader):
         df: "_pd.DataFrame",
         task: Optional[str],
         source: str,
+        video_resolver: Optional[VideoDatasetResolver] = None,
     ) -> list[Episode]:
         """Split a full-dataset DataFrame into per-episode Episode objects."""
         episode_col = "episode_index"
@@ -402,8 +436,19 @@ class LeRobotReader(DatasetReader):
                 f"Available columns: {list(df.columns)}"
             )
         episodes: list[Episode] = []
+        cum_frame_offset = 0
         for ep_id, group in df.groupby(episode_col, sort=True):
-            episodes.append(LeRobotReader._episode_from_group(group, ep_id, task, source))
+            episodes.append(
+                LeRobotReader._episode_from_group(
+                    group,
+                    int(ep_id),
+                    task,
+                    source,
+                    video_resolver=video_resolver,
+                    fallback_start_frame=cum_frame_offset,
+                )
+            )
+            cum_frame_offset += len(group)
         return episodes
 
     @staticmethod
@@ -412,6 +457,8 @@ class LeRobotReader(DatasetReader):
         ep_id: int,
         task: Optional[str],
         source: str,
+        video_resolver: Optional[VideoDatasetResolver] = None,
+        fallback_start_frame: int = 0,
     ) -> Episode:
         if "frame_index" in group.columns:
             group = group.sort_values("frame_index")
@@ -430,6 +477,24 @@ class LeRobotReader(DatasetReader):
                     if decoded is not None:
                         raw_obs[key] = decoded
 
+        # Decode video columns for v2/v3 datasets when requested
+        if video_resolver is not None:
+            for vcol in video_resolver.video_cols:
+                key = vcol.removeprefix("observation.")
+                if key not in raw_obs:
+                    v_path, s_frame, n_frames = video_resolver.resolve_video_slice(
+                        vcol,
+                        ep_id,
+                        ep_len=len(timestamps),
+                        fallback_start_frame=fallback_start_frame,
+                    )
+                    if v_path is not None:
+                        decoded = _decode_video_frames(
+                            v_path, start_frame=s_frame, num_frames=n_frames
+                        )
+                        if decoded is not None:
+                            raw_obs[key] = decoded
+
         obs = normalize_obs_keys(raw_obs)
 
         return Episode(
@@ -444,7 +509,7 @@ class LeRobotReader(DatasetReader):
         )
 
 
-# ── image decoding (v1 only) ─────────────────────────────────────────────────
+# ── image & video decoding ───────────────────────────────────────────────────
 
 
 def _decode_image_column(cells: list) -> Optional[np.ndarray]:
@@ -483,6 +548,217 @@ def _decode_image_column(cells: list) -> Optional[np.ndarray]:
         frames.append(np.array(img, dtype=np.uint8))
 
     return np.stack(frames)
+
+
+def _decode_video_frames(
+    video_path: Path,
+    start_frame: int = 0,
+    num_frames: Optional[int] = None,
+) -> Optional[np.ndarray]:
+    """
+    Decode a range of frames from a video file into a (T, H, W, 3) uint8 RGB array.
+    """
+    if not video_path.exists():
+        return None
+
+    try:
+        backend_name, backend = _require_video_decoder()
+    except ImportError:
+        return None
+
+    if backend_name == "av":
+        try:
+            container = backend.open(str(video_path))
+            if not container.streams.video:
+                container.close()
+                return None
+            stream = container.streams.video[0]
+            stream.thread_type = "AUTO"
+            frames = []
+            frame_idx = 0
+            end_frame = (start_frame + num_frames) if num_frames is not None else None
+
+            for frame in container.decode(stream):
+                if frame_idx >= start_frame:
+                    if end_frame is not None and frame_idx >= end_frame:
+                        break
+                    rgb = frame.to_ndarray(format="rgb24")
+                    frames.append(rgb)
+                frame_idx += 1
+            container.close()
+            if not frames:
+                return None
+            return np.stack(frames)
+        except Exception:
+            return None
+
+    elif backend_name == "cv2":
+        try:
+            cap = backend.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                return None
+            if start_frame > 0:
+                cap.set(backend.CAP_PROP_POS_FRAMES, start_frame)
+            frames = []
+            count = 0
+            while True:
+                if num_frames is not None and count >= num_frames:
+                    break
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                rgb = backend.cvtColor(frame, backend.COLOR_BGR2RGB)
+                frames.append(rgb)
+                count += 1
+            cap.release()
+            if not frames:
+                return None
+            return np.stack(frames)
+        except Exception:
+            return None
+
+    elif backend_name == "imageio":
+        try:
+            if num_frames is not None:
+                imgs = backend.imread(str(video_path), index=slice(start_frame, start_frame + num_frames))
+            else:
+                imgs = backend.imread(str(video_path))
+            return np.asarray(imgs, dtype=np.uint8)
+        except Exception:
+            return None
+
+    return None
+
+
+class VideoDatasetResolver:
+    """
+    Locates and indexes video files and episode frame slices for LeRobot v2 and v3 datasets.
+    """
+
+    def __init__(self, root: Path, info: dict) -> None:
+        self.root = root
+        self.info = info
+        self.codebase_version = str(info.get("codebase_version", "v2.0")).lower()
+        self.fps = float(info.get("fps", 30.0))
+        self.video_cols = _image_columns_from_info(info)
+        self.episodes_meta = self._load_episodes_jsonl()
+        self._cumulative_offsets = self._build_cumulative_offsets()
+
+    def _load_episodes_jsonl(self) -> dict[int, dict]:
+        episodes_path = self.root / "meta" / "episodes.jsonl"
+        if not episodes_path.exists():
+            return {}
+        result = {}
+        with open(episodes_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                ep_id = record.get("episode_index")
+                if ep_id is not None:
+                    result[int(ep_id)] = record
+        return result
+
+    def _build_cumulative_offsets(self) -> dict[int, tuple[int, int]]:
+        offsets = {}
+        curr = 0
+        for ep_id in sorted(self.episodes_meta.keys()):
+            meta = self.episodes_meta[ep_id]
+            length = meta.get("length", 0)
+            offsets[ep_id] = (curr, length)
+            curr += length
+        return offsets
+
+    def resolve_video_slice(
+        self,
+        col: str,
+        ep_id: int,
+        ep_len: Optional[int] = None,
+        fallback_start_frame: int = 0,
+    ) -> tuple[Optional[Path], int, Optional[int]]:
+        """
+        Returns (video_file_path, start_frame, num_frames) for the given column and episode.
+        """
+        col_names = [col]
+        for prefix in ("observation.images.", "observation.", "images."):
+            if col.startswith(prefix):
+                col_names.append(col.removeprefix(prefix))
+        col_names = list(dict.fromkeys(col_names))
+
+        exts = (".mp4", ".mkv", ".avi", ".webm")
+        video_root = self.root / "videos"
+        if not video_root.exists():
+            return None, 0, ep_len
+
+        chunk_dirs = sorted(video_root.glob("chunk-*"))
+        search_dirs = chunk_dirs + [video_root]
+
+        # 1. Try v2 layout: per-episode video file
+        for sdir in search_dirs:
+            for cname in col_names:
+                col_dir = sdir / cname
+                if col_dir.is_dir():
+                    for ext in exts:
+                        candidates = [
+                            col_dir / f"episode_{ep_id:06d}{ext}",
+                            col_dir / f"episode_{ep_id}{ext}",
+                            col_dir / f"{ep_id:06d}{ext}",
+                            col_dir / f"{ep_id}{ext}",
+                        ]
+                        for cand in candidates:
+                            if cand.is_file():
+                                return cand, 0, ep_len
+
+        # 2. Try v3 layout: chunk-concatenated video files
+        for sdir in search_dirs:
+            for cname in col_names:
+                for ext in exts:
+                    cand = sdir / f"{cname}{ext}"
+                    if cand.is_file():
+                        start_f, length = self._get_v3_slice(
+                            col, ep_id, ep_len, fallback_start_frame
+                        )
+                        return cand, start_f, length
+
+                    col_dir = sdir / cname
+                    if col_dir.is_dir():
+                        for chunk_cand in sorted(col_dir.glob(f"*{ext}")):
+                            if "episode" not in chunk_cand.name:
+                                start_f, length = self._get_v3_slice(
+                                    col, ep_id, ep_len, fallback_start_frame
+                                )
+                                return chunk_cand, start_f, length
+
+        return None, 0, ep_len
+
+    def _get_v3_slice(
+        self, col: str, ep_id: int, ep_len: Optional[int], fallback_start: int
+    ) -> tuple[int, Optional[int]]:
+        meta = self.episodes_meta.get(ep_id, {})
+        for k in (f"videos/{col}/from_frame", f"videos.{col}.from_frame", "from_frame"):
+            if k in meta:
+                start_f = int(meta[k])
+                to_f = int(meta.get(k.replace("from_frame", "to_frame"), start_f + (ep_len or 0)))
+                return start_f, max(0, to_f - start_f)
+
+        for k in (
+            f"videos/{col}/from_timestamp",
+            f"videos.{col}.from_timestamp",
+            "from_timestamp",
+        ):
+            if k in meta:
+                from_ts = float(meta[k])
+                to_ts = float(meta.get(k.replace("from_timestamp", "to_timestamp"), from_ts))
+                start_f = int(round(from_ts * self.fps))
+                num_f = int(round((to_ts - from_ts) * self.fps))
+                return start_f, num_f or ep_len
+
+        if ep_id in self._cumulative_offsets:
+            start_f, length = self._cumulative_offsets[ep_id]
+            return start_f, length or ep_len
+
+        return fallback_start, ep_len
 
 
 # ── metadata readers ─────────────────────────────────────────────────────────
