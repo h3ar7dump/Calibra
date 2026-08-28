@@ -53,6 +53,7 @@ strict = true
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
+addopts = "--basetemp=.pytest_temp"
 markers = [
     "integration: tests that require network access and optional HF Hub dependencies",
 ]

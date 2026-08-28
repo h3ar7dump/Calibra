@@ -39,6 +39,7 @@ from calibra.analyzers.smoothness import ControlSmoothnessAnalyzer
 from calibra.analyzers.task_structure import TaskStructureAnalyzer
 from calibra.analyzers.temporal import TemporalAnalyzer
 from calibra.pipeline import Pipeline
+from calibra.progress import ProgressBar
 from calibra.schema.episode import EpisodeBatch
 from calibra.schema.report import DiagnosticReport, RiskFlag, RiskLevel
 
@@ -234,10 +235,17 @@ def run_integrity(argv: list[str]) -> None:
         dataset_path = dataset_path[len("hf://") :]
 
     reader = None
+    decode_pbar = None
     if args.decode_images:
         from calibra.ingestion.adapters.lerobot import LeRobotReader
 
-        reader = LeRobotReader(decode_images=True)
+        decode_pbar = ProgressBar(description="Decoding frames", stream=sys.stderr)
+
+        def decode_callback(current: int, total: int, message: str) -> None:
+            if decode_pbar is not None:
+                decode_pbar.update(current, total=total, message=message)
+
+        reader = LeRobotReader(decode_images=True, progress_callback=decode_callback)
     elif args.format:
         from calibra.__main__ import _get_reader
 
@@ -254,6 +262,9 @@ def run_integrity(argv: list[str]) -> None:
     except Exception as exc:
         print(f"error loading dataset: {exc}", file=sys.stderr)
         sys.exit(1)
+    finally:
+        if decode_pbar is not None:
+            decode_pbar.close()
 
     log(f"  {batch.n_episodes} episodes  ·  {batch.n_samples} steps")
     log("Running integrity checks ...")
@@ -267,7 +278,17 @@ def run_integrity(argv: list[str]) -> None:
             ControlSmoothnessAnalyzer(),
             CalibrationDriftAnalyzer(),
         ]
-        report = Pipeline(analyzers=analyzers).run(batch)
+        check_pbar = ProgressBar(
+            total=len(analyzers), description="Integrity checks", stream=sys.stderr
+        )
+
+        def check_callback(current: int, total: int, message: str) -> None:
+            check_pbar.update(current, total=total, message=message)
+
+        try:
+            report = Pipeline(analyzers=analyzers).run(batch, progress_callback=check_callback)
+        finally:
+            check_pbar.close()
     except Exception as exc:
         print(f"error running pipeline: {exc}", file=sys.stderr)
         sys.exit(1)

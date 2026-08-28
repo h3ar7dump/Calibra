@@ -99,6 +99,6 @@ def test_never_mixes_in_benchmark_simulated_data(tmp_path):
     # Sanity: case_study module has no import of calibra.benchmark / predict_outcome.
     import calibra.case_study as mod
 
-    src = Path(mod.__file__).read_text()
+    src = Path(mod.__file__).read_text(encoding="utf-8")
     assert "predict_outcome" not in src
     assert "CoresetSelector" not in src

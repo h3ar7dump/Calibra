@@ -311,3 +311,18 @@ class TestRunIntegrity:
             run_integrity(["/dummy/path.h5", "--policy", policy_path])
         assert exc_info.value.code == 2
         assert "error loading policy file" in capsys.readouterr().err
+
+    def test_run_integrity_progress_stderr(self, capsys):
+        batch = _make_batch(n_short=0)
+        with patch("calibra.ingestion.registry.load", return_value=batch):
+            with pytest.raises(SystemExit) as exc_info:
+                run_integrity(["/dummy/path.h5", "--json"])
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        # Verify JSON on stdout is intact
+        payload = json.loads(captured.out)
+        assert payload["status"] == "Healthy"
+        # Verify progress messages in stderr
+        assert "Loading" in captured.err
+        assert "Running integrity checks" in captured.err
+

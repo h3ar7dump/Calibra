@@ -248,3 +248,17 @@ class TestReproducibilityMetadata:
         assert restored.calibra_version == report.calibra_version
         assert restored.config_hash == report.config_hash
         assert restored.analyzer_versions == report.analyzer_versions
+
+    def test_pipeline_progress_callback(self, clean_batch):
+        calls = []
+
+        def callback(current: int, total: int, message: str) -> None:
+            calls.append((current, total, message))
+
+        pipeline = Pipeline(mode="fast")
+        report = pipeline.run(clean_batch, progress_callback=callback)
+        assert report is not None
+        assert len(calls) > 0
+        assert calls[-1][0] == len(pipeline.analyzers)
+        assert calls[-1][1] == len(pipeline.analyzers)
+

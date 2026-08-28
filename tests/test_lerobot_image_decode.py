@@ -436,3 +436,18 @@ class TestLeRobotV3VideoDecoding:
             assert result.flags, f"{result.analyzer_name} produced no flags"
             assert result.flags[0].level != RiskLevel.INFO
         assert freeze_result.flags[0].level in (RiskLevel.WARNING, RiskLevel.CRITICAL)
+
+    def test_progress_callback_invocations(self, tmp_path):
+        calls = []
+
+        def callback(current: int, total: int, message: str) -> None:
+            calls.append((current, total, message))
+
+        path = _make_v2_dataset(tmp_path)
+        reader = LeRobotReader(decode_images=True, progress_callback=callback)
+        batch = reader.read(path)
+        assert len(batch.episodes) == 6
+        assert len(calls) > 0
+        # Final call should report current == total == 6
+        assert calls[-1][0] == 6
+        assert calls[-1][1] == 6

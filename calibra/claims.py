@@ -62,7 +62,7 @@ def load_all() -> dict[str, dict]:
     claims: dict[str, dict] = {}
     for path in sorted(_CLAIMS_DIR.glob("*.json")):
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             for claim in data.get("claims", []):
                 claim["confidence"] = _derive_confidence(claim)

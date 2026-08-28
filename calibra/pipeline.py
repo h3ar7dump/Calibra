@@ -17,7 +17,7 @@ import hashlib
 import json
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 from calibra.analyzers.base import Analyzer
 from calibra.analyzers.coverage import CoverageEntropyAnalyzer
@@ -123,17 +123,19 @@ class Pipeline:
         batch: EpisodeBatch,
         policy_family: Optional[str] = None,
         cache=None,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> DiagnosticReport:
         """
         Run all analyzers over `batch` and return a DiagnosticReport.
 
         Parameters
         ----------
-        batch         : normalized dataset from the ingestion layer.
-        policy_family : optional target policy for conditioned hints
-                        (e.g. "diffusion", "act", "transformer").
-        cache         : optional AuditCache instance. On hit, returns cached
-                        result instantly. On miss, runs pipeline and stores result.
+        batch             : normalized dataset from the ingestion layer.
+        policy_family     : optional target policy for conditioned hints
+                            (e.g. "diffusion", "act", "transformer").
+        cache             : optional AuditCache instance. On hit, returns cached
+                            result instantly. On miss, runs pipeline and stores result.
+        progress_callback : optional callback(current, total, message) for progress reporting.
         """
         if cache is not None:
             fingerprint = cache.fingerprint(batch, policy_family)
@@ -157,14 +159,21 @@ class Pipeline:
         timing: dict[str, float] = {}
         skipped: list[str] = []
         analyzer_versions: dict[str, str] = {}
-        for analyzer in analyzers:
+        total_analyzers = len(analyzers)
+        for idx, analyzer in enumerate(analyzers):
             if not analyzer.requires <= capabilities:
                 skipped.append(analyzer.name)
+                if progress_callback:
+                    progress_callback(idx + 1, total_analyzers, f"Skipped {analyzer.name}")
                 continue
+            if progress_callback:
+                progress_callback(idx, total_analyzers, f"Running {analyzer.name}")
             t0 = time.perf_counter()
             results.append(analyzer.analyze(batch, policy_family=policy_family))
             timing[analyzer.name] = round(time.perf_counter() - t0, 4)
             analyzer_versions[analyzer.name] = analyzer.version
+            if progress_callback:
+                progress_callback(idx + 1, total_analyzers, f"Completed {analyzer.name}")
 
         from calibra import __version__ as calibra_version
 
@@ -196,20 +205,27 @@ class Pipeline:
         policy_family: Optional[str] = None,
         reader=None,
         cache=None,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> DiagnosticReport:
         """
         Load a dataset from `path` (auto-detecting format) and run the pipeline.
 
         Parameters
         ----------
-        path          : filesystem path to the dataset directory or file.
-        policy_family : optional target policy for conditioned hints.
-        reader        : optional DatasetReader instance to bypass auto-detection.
-        cache         : optional AuditCache. The loaded batch is stored in
-                        ``self._last_batch`` for callers that need episode hashes.
+        path              : filesystem path to the dataset directory or file.
+        policy_family     : optional target policy for conditioned hints.
+        reader            : optional DatasetReader instance to bypass auto-detection.
+        cache             : optional AuditCache. The loaded batch is stored in
+                            ``self._last_batch`` for callers that need episode hashes.
+        progress_callback : optional callback(current, total, message) for progress reporting.
         """
         from calibra.ingestion.registry import load
 
         batch = load(path, reader=reader)
         self._last_batch = batch
-        return self.run(batch, policy_family=policy_family, cache=cache)
+        return self.run(
+            batch,
+            policy_family=policy_family,
+            cache=cache,
+            progress_callback=progress_callback,
+        )

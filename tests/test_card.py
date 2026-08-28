@@ -311,7 +311,7 @@ class TestRunCardCLI:
             with pytest.raises(SystemExit):
                 run_card(["synthetic_path", "--out", str(out_file)])
         assert out_file.exists()
-        assert "Dataset Quality Report" in out_file.read_text()
+        assert "Dataset Quality Report" in out_file.read_text(encoding="utf-8")
 
     def test_run_card_exit_0_clean(self, monkeypatch):
         from calibra.card import run_card

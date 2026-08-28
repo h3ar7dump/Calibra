@@ -37,7 +37,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 import numpy as np
 
@@ -156,8 +156,13 @@ class LeRobotReader(DatasetReader):
                      load time and memory use.
     """
 
-    def __init__(self, decode_images: bool = False) -> None:
+    def __init__(
+        self,
+        decode_images: bool = False,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    ) -> None:
         self.decode_images = decode_images
+        self.progress_callback = progress_callback
 
     @property
     def format_name(self) -> str:
@@ -185,7 +190,9 @@ class LeRobotReader(DatasetReader):
             scalar_cols = self._scalar_columns(hf, ds)
             ds = ds.select_columns(scalar_cols)
             df = ds.to_pandas()
-            episodes = self._episodes_from_df(df, task, path)
+            episodes = self._episodes_from_df(
+                df, task, path, progress_callback=self.progress_callback
+            )
         else:
             p = Path(bare)
             if (p / "meta" / "info.json").exists():
@@ -200,7 +207,9 @@ class LeRobotReader(DatasetReader):
                 scalar_cols = self._scalar_columns(hf, ds)
                 ds = ds.select_columns(scalar_cols)
                 df = ds.to_pandas()
-                episodes = self._episodes_from_df(df, task, path)
+                episodes = self._episodes_from_df(
+                    df, task, path, progress_callback=self.progress_callback
+                )
                 return EpisodeBatch(
                     episodes=episodes,
                     dataset_name=p.name,
@@ -245,7 +254,9 @@ class LeRobotReader(DatasetReader):
                     info = json.load(f)
                 video_resolver = VideoDatasetResolver(p, info)
 
-        episodes = self._episodes_from_df(df, task, source, video_resolver=video_resolver)
+        episodes = self._episodes_from_df(
+            df, task, source, video_resolver=video_resolver, progress_callback=self.progress_callback
+        )
         return EpisodeBatch(
             episodes=episodes,
             dataset_name=p.name,
@@ -290,7 +301,9 @@ class LeRobotReader(DatasetReader):
         if self.decode_images:
             video_resolver = VideoDatasetResolver(p, info)
 
-        episodes = self._episodes_from_df(df, task, source, video_resolver=video_resolver)
+        episodes = self._episodes_from_df(
+            df, task, source, video_resolver=video_resolver, progress_callback=self.progress_callback
+        )
         return EpisodeBatch(
             episodes=episodes,
             dataset_name=p.name,
@@ -427,6 +440,7 @@ class LeRobotReader(DatasetReader):
         task: Optional[str],
         source: str,
         video_resolver: Optional[VideoDatasetResolver] = None,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> list[Episode]:
         """Split a full-dataset DataFrame into per-episode Episode objects."""
         episode_col = "episode_index"
@@ -437,7 +451,11 @@ class LeRobotReader(DatasetReader):
             )
         episodes: list[Episode] = []
         cum_frame_offset = 0
-        for ep_id, group in df.groupby(episode_col, sort=True):
+        groups = list(df.groupby(episode_col, sort=True))
+        total_episodes = len(groups)
+        for idx, (ep_id, group) in enumerate(groups):
+            if progress_callback:
+                progress_callback(idx, total_episodes, f"Episode {ep_id}")
             episodes.append(
                 LeRobotReader._episode_from_group(
                     group,
@@ -449,6 +467,8 @@ class LeRobotReader(DatasetReader):
                 )
             )
             cum_frame_offset += len(group)
+            if progress_callback:
+                progress_callback(idx + 1, total_episodes, f"Episode {ep_id}")
         return episodes
 
     @staticmethod

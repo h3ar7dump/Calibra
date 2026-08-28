@@ -376,7 +376,7 @@ def run_card(argv: list[str]) -> None:
     if args.out:
         from pathlib import Path
 
-        Path(args.out).write_text(card)
+        Path(args.out).write_text(card, encoding="utf-8")
         log(f"  Card written to {args.out}")
     else:
         print(card)
