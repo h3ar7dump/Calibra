@@ -38,6 +38,7 @@ from calibra.analyzers.duplicate_frame import DuplicateFrameAnalyzer
 from calibra.analyzers.smoothness import ControlSmoothnessAnalyzer
 from calibra.analyzers.task_structure import TaskStructureAnalyzer
 from calibra.analyzers.temporal import TemporalAnalyzer
+from calibra.analyzers.video_framerate import VideoFramerateAnalyzer
 from calibra.pipeline import Pipeline
 from calibra.progress import ProgressBar
 from calibra.schema.episode import EpisodeBatch
@@ -61,6 +62,8 @@ _INTEGRITY_METRICS = frozenset(
         "duplicate_frame_rate",
         "camera_freeze_events",
         "blurry_episode_fraction",
+        "video_fps_mismatch",
+        "video_vfr_jitter_cv",
         "ldlj",
         "jerk_spike_rate",
         "velocity_discontinuity_rate",
@@ -275,6 +278,7 @@ def run_integrity(argv: list[str]) -> None:
             DuplicateFrameAnalyzer(),
             CameraFreezeAnalyzer(),
             BlurAnalyzer(),
+            VideoFramerateAnalyzer(),
             ControlSmoothnessAnalyzer(),
             CalibrationDriftAnalyzer(),
         ]

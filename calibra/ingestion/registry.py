@@ -21,6 +21,8 @@ def register(reader_cls: type[DatasetReader]) -> type[DatasetReader]:
 
 def detect_reader(path: str) -> type[DatasetReader]:
     """Return the first registered reader that claims it can handle `path`."""
+    if not _READERS:
+        import calibra.ingestion  # noqa: F401
     for cls in _READERS:
         if cls.can_read(path):
             return cls

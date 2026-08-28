@@ -134,10 +134,13 @@ def _is_hub_id(path: str) -> bool:
     """
     if _is_hub_uri(path):
         return True
-    p = Path(path)
-    if p.exists():
-        return False
-    parts = path.split("/")
+    try:
+        p = Path(path)
+        if p.exists() or p.is_dir() or p.is_file():
+            return False
+    except Exception:
+        pass
+    parts = path.replace("\\", "/").split("/")
     if len(parts) != 2 or not all(parts):
         return False
     return not any(c in path for c in ("\\", ":", ".parquet", ".h5", ".hdf5", ".json"))
@@ -246,13 +249,15 @@ class LeRobotReader(DatasetReader):
         df = conn.execute("SELECT * FROM dataset").df()
         conn.close()
 
+        info_path = p / "meta" / "info.json"
+        info = {}
+        if info_path.exists():
+            with open(info_path, encoding="utf-8") as f:
+                info = json.load(f)
+
         video_resolver = None
-        if self.decode_images:
-            info_path = p / "meta" / "info.json"
-            if info_path.exists():
-                with open(info_path, encoding="utf-8") as f:
-                    info = json.load(f)
-                video_resolver = VideoDatasetResolver(p, info)
+        if self.decode_images and info:
+            video_resolver = VideoDatasetResolver(p, info)
 
         episodes = self._episodes_from_df(
             df, task, source, video_resolver=video_resolver, progress_callback=self.progress_callback
@@ -262,6 +267,7 @@ class LeRobotReader(DatasetReader):
             dataset_name=p.name,
             format=self.format_name,
             source_path=source,
+            extra={"fps": info.get("fps")} if info else {},
         )
 
     def _read_local_v2_pyarrow(self, p: Path, source: str) -> EpisodeBatch:
@@ -309,6 +315,7 @@ class LeRobotReader(DatasetReader):
             dataset_name=p.name,
             format=self.format_name,
             source_path=source,
+            extra={"fps": info.get("fps")} if info else {},
         )
 
     def iter_episodes_lazy(self, path: str):

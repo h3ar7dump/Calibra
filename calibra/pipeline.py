@@ -34,6 +34,7 @@ from calibra.analyzers.ssl_embed import SSLTrajectoryEmbedderAnalyzer
 from calibra.analyzers.task_structure import TaskStructureAnalyzer
 from calibra.analyzers.temporal import TemporalAnalyzer
 from calibra.analyzers.transition_dynamics import TransitionDynamicsAnalyzer
+from calibra.analyzers.video_framerate import VideoFramerateAnalyzer
 from calibra.analyzers.world_model import WorldModelConsistencyAnalyzer
 from calibra.schema.episode import EpisodeBatch
 from calibra.schema.report import DiagnosticReport
@@ -70,6 +71,7 @@ def _default_analyzers() -> list[Analyzer]:
         LatentDynamicsAnalyzer(),
         SSLTrajectoryEmbedderAnalyzer(),
         ForceTorqueContactAnalyzer(),
+        VideoFramerateAnalyzer(),
     ]
 
 
