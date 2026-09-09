@@ -41,6 +41,7 @@ pip-delete-this-directory.txt
 htmlcov/
 .tox/
 .pytest_cache/
+.pytest_temp/
 .ruff_cache/
 .mypy_cache/
 .pyre_configuration/
@@ -79,6 +80,10 @@ venv.bak/
 .idea/
 *.swp
 *.swo
+
+# Datasets
+datasets/
+data/
 
 # OS files
 .DS_Store
