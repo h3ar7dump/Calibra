@@ -191,6 +191,30 @@ def run_integrity(argv: list[str]) -> None:
         ),
     )
     p.add_argument(
+        "--blur-threshold",
+        type=float,
+        metavar="VARIANCE",
+        help=(
+            "Mean Laplacian variance cutoff for a single-episode dataset. "
+            "Calibrate for your camera and pixel scale. Multi-episode datasets "
+            "ignore this cutoff and use IQR (requires at least 4 episodes with images)."
+        ),
+    )
+    p.add_argument(
+        "--blur-warning",
+        type=float,
+        default=0.05,
+        metavar="FRACTION",
+        help="Blurry episode fraction for WARNING (default: 0.05)",
+    )
+    p.add_argument(
+        "--blur-critical",
+        type=float,
+        default=0.15,
+        metavar="FRACTION",
+        help="Blurry episode fraction for CRITICAL (default: 0.15)",
+    )
+    p.add_argument(
         "--strict",
         action="store_true",
         help=(
@@ -212,6 +236,17 @@ def run_integrity(argv: list[str]) -> None:
         ),
     )
     args = p.parse_args(argv)
+
+    if not 0 < args.blur_warning <= args.blur_critical <= 1:
+        p.error("blur fractions must satisfy 0 < --blur-warning <= --blur-critical <= 1")
+    try:
+        blur_analyzer = BlurAnalyzer(
+            sharpness_threshold=args.blur_threshold,
+            warning=args.blur_warning,
+            critical=args.blur_critical,
+        )
+    except ValueError as exc:
+        p.error(str(exc))
 
     if args.strict and args.policy:
         print("error: --strict and --policy are mutually exclusive", file=sys.stderr)
@@ -277,7 +312,7 @@ def run_integrity(argv: list[str]) -> None:
             TaskStructureAnalyzer(),
             DuplicateFrameAnalyzer(),
             CameraFreezeAnalyzer(),
-            BlurAnalyzer(),
+            blur_analyzer,
             VideoFramerateAnalyzer(),
             ControlSmoothnessAnalyzer(),
             CalibrationDriftAnalyzer(),

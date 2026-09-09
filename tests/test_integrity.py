@@ -149,6 +149,61 @@ def _make_batch(n_eps: int = 20, n_short: int = 4, n_steps: int = 80) -> Episode
 
 
 class TestRunIntegrity:
+    @pytest.mark.parametrize("blurry", [False, True])
+    def test_single_episode_absolute_blur_in_json(self, capsys, blurry):
+        batch = _make_batch(n_eps=1, n_short=0, n_steps=20)
+        images = np.random.default_rng(0).integers(0, 255, (20, 16, 16, 3), dtype=np.uint8)
+        if blurry:
+            images[:] = 128
+        batch.episodes[0].observations["camera_rgb"] = images
+        with patch("calibra.ingestion.registry.load", return_value=batch):
+            with pytest.raises(SystemExit) as exc_info:
+                run_integrity(["/dummy/path.h5", "--blur-threshold", "100", "--json"])
+        assert exc_info.value.code == (1 if blurry else 0)
+        payload = json.loads(capsys.readouterr().out)
+        group = payload["critical"] if blurry else payload["passed"]
+        flag = next(f for f in group if f["metric"] == "blurry_episode_fraction")
+        assert flag["observed_value"] == (1.0 if blurry else 0.0)
+        assert flag["suggested_action"] == ("block" if blurry else "informational")
+        assert "blurry_frame_fraction" not in json.dumps(payload)
+
+    def test_invalid_blur_threshold_rejected_before_loading(self, capsys):
+        with patch("calibra.ingestion.registry.load") as load:
+            with pytest.raises(SystemExit) as exc_info:
+                run_integrity(["/dummy/path.h5", "--blur-threshold", "nan"])
+        assert exc_info.value.code == 2
+        assert "sharpness_threshold" in capsys.readouterr().err
+        load.assert_not_called()
+
+    def test_multiple_episodes_ignore_blur_threshold(self, capsys):
+        batch = _make_batch(n_eps=4, n_short=0, n_steps=20)
+        for episode in batch.episodes:
+            episode.observations["camera_rgb"] = np.full((20, 16, 16, 3), 128, dtype=np.uint8)
+        with patch("calibra.ingestion.registry.load", return_value=batch):
+            with pytest.raises(SystemExit):
+                run_integrity(["/dummy/path.h5", "--blur-threshold", "100", "--json"])
+        payload = json.loads(capsys.readouterr().out)
+        # All equally blurry: IQR finds no outlier, unlike the absolute cutoff.
+        flag = next(f for f in payload["passed"] if f["metric"] == "blurry_episode_fraction")
+        assert flag["observed_value"] == 0.0
+
+    @pytest.mark.parametrize(
+        "options",
+        [
+            ["--blur-critical", "nan"],
+            ["--blur-warning", "0"],
+            ["--blur-warning", "0.5", "--blur-critical", "0.1"],
+            ["--blur-critical", "1.1"],
+        ],
+    )
+    def test_invalid_blur_fractions_rejected_in_default_mode(self, options, capsys):
+        with patch("calibra.ingestion.registry.load") as load:
+            with pytest.raises(SystemExit) as exc_info:
+                run_integrity(["/dummy/path.h5", *options])
+        assert exc_info.value.code == 2
+        assert "warning" in capsys.readouterr().err
+        load.assert_not_called()
+
     def test_text_output_reports_critical_and_exits_1(self, capsys):
         batch = _make_batch()
         with patch("calibra.ingestion.registry.load", return_value=batch):
@@ -325,4 +380,3 @@ class TestRunIntegrity:
         # Verify progress messages in stderr
         assert "Loading" in captured.err
         assert "Running integrity checks" in captured.err
-

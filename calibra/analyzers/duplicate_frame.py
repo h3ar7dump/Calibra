@@ -33,11 +33,11 @@ _DUPLICATE_WARNING = 0.05  # 5% of transitions duplicated
 _DUPLICATE_CRITICAL = 0.15  # 15%
 
 
-def _find_image_obs(ep: Episode) -> Optional[np.ndarray]:
+def _find_image_obs(ep: Episode, min_frames: int = 2) -> Optional[np.ndarray]:
     for key in ep.observations:
         if any(kw in key.lower() for kw in _VISUAL_KEYS):
             candidate = ep.observations[key]
-            if candidate.ndim in (3, 4) and len(candidate) >= 2:  # (T, H, W) or (T, H, W, C)
+            if candidate.ndim in (3, 4) and len(candidate) >= min_frames:  # (T, H, W[, C])
                 return candidate
     return None
 
