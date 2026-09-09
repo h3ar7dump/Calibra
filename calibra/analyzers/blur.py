@@ -146,7 +146,7 @@ class BlurAnalyzer(Analyzer):
                             metric="blurry_episode_fraction",
                             observed=ObservedValue(value=None),
                             interpretation="Single-episode blur detection needs a sharpness cutoff.",
-                            implication="Set sharpness_threshold (CLI: --blur-threshold) to run it.",
+                            implication="Set sharpness_threshold on BlurAnalyzer to run it.",
                         )
                     ],
                     raw_metrics={"skipped": "sharpness_threshold required for single episode"},

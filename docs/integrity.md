@@ -142,35 +142,26 @@ A policy file is a flat JSON object mapping a **metric name** — the exact name
 
 #### Single-episode blur checks
 
-Pass `--blur-threshold` to check an episode independently, without a reference
-batch. The cutoff is used **only when the input contains exactly one episode**.
+In Python, instantiate `BlurAnalyzer(sharpness_threshold=...)` to check an episode independently, without a reference batch. The cutoff is used **only when the input contains exactly one episode**.
 This mode calculates Laplacian variance for **every frame**, then averages
 those values within each episode. An episode whose mean is **strictly below**
 the configured cutoff counts as blurry. A few blurry frames can be diluted by
 sharp frames in that average; this is an episode-level sharpness check.
 
-```bash
-# 100 is an example cutoff, not a universal sharpness standard.
-calibra integrity /data/single_episode.h5 --blur-threshold 100 --json
-calibra integrity /data/single_episode.h5 --blur-threshold 100 --blur-warning 0.10 --blur-critical 0.25
-```
-
-Both modes use the existing `blurry_episode_fraction` finding: blurry episodes
+Both modes use the `blurry_episode_fraction` finding: blurry episodes
 divided by checked episodes. With a single episode this is **0** (not blurry)
-or **1** (blurry), so a blurry single episode is **CRITICAL** with the defaults.
+or **1** (blurry), so a blurry single episode is **CRITICAL** with default fraction thresholds.
 Across a batch, at least **5%** blurry episodes produces WARNING and at least
 **15%** produces CRITICAL. A CRITICAL finding blocks CI unless a policy maps
 `blurry_episode_fraction` to `"inspect"`.
-`--blur-warning` and `--blur-critical` configure these fraction thresholds.
-The CLI requires `0 < warning <= critical <= 1` in both modes.
 
-Calibrate a positive, finite `--blur-threshold` on sharp and blurry examples
+Calibrate a positive, finite `sharpness_threshold` on sharp and blurry examples
 from the same camera, resolution, exposure, and scene conditions. Pixel values
 are **not normalized**: the same numerical cutoff is not appropriate for both
 `uint8` images in 0–255 and float images in 0–1. The threshold uses squared pixel
 intensity units. Low-texture scenes can also have low Laplacian variance.
 
-The Python API uses the same settings:
+The Python API configuration:
 
 ```python
 from calibra.analyzers.blur import BlurAnalyzer
@@ -200,11 +191,11 @@ this uses the first matching camera observation per episode. Even a one-frame
 episode can be checked. If no image data is available, no pass/fail judgement
 is made.
 
-For a single episode, omitting `sharpness_threshold` / `--blur-threshold`
+For a single episode, omitting `sharpness_threshold` (e.g. running via the standard CLI)
 returns INFO with a configuration hint, without making a pass/fail judgement.
 
 For **multiple episodes**, the original IQR detection always applies, even if
-`sharpness_threshold` / `--blur-threshold` is supplied. It compares each episode's
+`sharpness_threshold` is supplied. It compares each episode's
 mean sharpness with `Q1 - 1.5 × IQR` and reports `blurry_episode_fraction`.
 The original minimum of **four episodes with images** still applies: batches
 of two or three episodes, or larger batches with fewer than four usable image
