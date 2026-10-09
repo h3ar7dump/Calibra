@@ -172,7 +172,7 @@ def run_integrity(argv: list[str]) -> None:
         "--format",
         "-f",
         metavar="FMT",
-        choices=["hdf5", "isaac_lab", "lerobot", "rlds", "mcap"],
+        choices=["hdf5", "isaac_lab", "lerobot", "rlds", "mcap", "lumos"],
         help="Force a format adapter (default: auto-detect)",
     )
     p.add_argument(
@@ -185,9 +185,9 @@ def run_integrity(argv: list[str]) -> None:
         "--decode-images",
         action="store_true",
         help=(
-            "Decode camera frames for LeRobot (v1 Image features, v2/v3 mp4 videos) "
+            "Decode camera frames for LeRobot or Lumos "
             "datasets so duplicate_frame_rate/camera_freeze_events/blurry_episode_fraction "
-            "can run. LeRobot-specific; increases load time and memory use."
+            "can run. Increases load time and memory use."
         ),
     )
     p.add_argument(
@@ -240,7 +240,10 @@ def run_integrity(argv: list[str]) -> None:
     reader = None
     decode_pbar = None
     if args.decode_images:
+        from calibra.__main__ import _get_reader
         from calibra.ingestion.adapters.lerobot import LeRobotReader
+        from calibra.ingestion.adapters.lumos import LumosReader
+        from calibra.ingestion.registry import detect_reader
 
         decode_pbar = ProgressBar(description="Decoding frames", stream=sys.stderr)
 
@@ -248,7 +251,20 @@ def run_integrity(argv: list[str]) -> None:
             if decode_pbar is not None:
                 decode_pbar.update(current, total=total, message=message)
 
-        reader = LeRobotReader(decode_images=True, progress_callback=decode_callback)
+        try:
+            reader_type = (
+                type(_get_reader(args.format)) if args.format else detect_reader(dataset_path)
+            )
+            if reader_type is LumosReader:
+                reader = LumosReader(decode_images=True)
+            elif reader_type is LeRobotReader:
+                reader = LeRobotReader(decode_images=True, progress_callback=decode_callback)
+            else:
+                raise ValueError("--decode-images supports LeRobot and Lumos datasets")
+        except Exception as exc:
+            decode_pbar.close()
+            print(f"error loading dataset: {exc}", file=sys.stderr)
+            sys.exit(1)
     elif args.format:
         from calibra.__main__ import _get_reader
 

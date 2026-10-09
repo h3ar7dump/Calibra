@@ -118,6 +118,10 @@ def _find_video_paths(batch: EpisodeBatch) -> list[Path]:
                 if p.is_file():
                     paths.append(p)
                     seen.add(str(bp))
+        # An explicit list is authoritative, including an empty list when all
+        # video streams are disabled. Do not rediscover excluded media on disk.
+        if "video_paths" in batch.extra:
+            return paths
 
     # 2. From episode / metadata extra if present
     episodes = list(batch.episodes)

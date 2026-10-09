@@ -28,6 +28,8 @@ class InfluenceAnalyzer(Analyzer):
     contact_weight: float = 0.3
     entropy_weight: float = 0.3
 
+    requires = frozenset({"actions"})
+
     @property
     def name(self) -> str:
         return "influence"

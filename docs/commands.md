@@ -10,6 +10,8 @@ Full documentation for all Calibra CLI commands. For a quick overview see the [R
 calibra integrity /data/robot_demos.h5
 calibra integrity /data/robot_demos.h5 --format hdf5
 calibra integrity /data/robot_demos.h5 --json
+calibra integrity /data/lumos --format lumos --json
+calibra integrity /data/lumos --decode-images
 ```
 
 ```
@@ -42,6 +44,8 @@ Integrity Score: 95/100  ·  Status: Healthy
 Runs before every other command in the recommended workflow — timestamp consistency, sensor sync, episode completeness, duplicate/frozen/blurry camera frames, and jittery/jerky motion. Findings are grouped into Critical/Warnings/Passed rather than led with a single score; the score is still computed but demoted to a summary line. Exit code `1` on any CRITICAL finding, safe for CI gating.
 
 See [Integrity Checks](integrity.md) for what each check detects and why it matters.
+
+For [Lumos recordings](lumos.md), loading reads the metadata, IMU values, sensor timestamps and audio headers. `--decode-images` enables video decoding at a maximum side length of 256 pixels and requires `calibra-robotics[lumos]`. Action-dependent checks are not evaluated because these recordings contain no robot commands. Calibra Score requires action data; use the integrity report for these sensor recordings.
 
 ---
 

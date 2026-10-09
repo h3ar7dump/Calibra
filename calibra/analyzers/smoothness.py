@@ -135,6 +135,8 @@ class ControlSmoothnessAnalyzer(Analyzer):
     n_bootstrap, ci_level : bootstrap CI parameters.
     """
 
+    requires = frozenset({"actions"})
+
     action_type: str = "position"
     gripper_dims: list[int] = field(default_factory=lambda: [-1])
     jerk_spike_k: float = 5.0

@@ -277,6 +277,11 @@ def compute_score(report: DiagnosticReport) -> dict:
         n_critical_flags : int
         n_warning_flags  : int
     """
+    if "control_smoothness" in report.skipped_analyzers:
+        raise ValueError(
+            "Calibra Score requires robot action data. "
+            "Use calibra integrity for sensor-only recordings."
+        )
     t_score, t_details = _score_temporal(report)
     s_score, s_details = _score_smoothness(report)
     c_score, c_details = _score_coverage(report)

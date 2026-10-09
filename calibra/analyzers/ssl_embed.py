@@ -25,6 +25,8 @@ class SSLTrajectoryEmbedderAnalyzer(Analyzer):
     behavioral outliers and measure dataset representation coverage.
     """
 
+    requires = frozenset({"actions"})
+
     def __init__(self, embedding_dim: int = 64) -> None:
         self.embedding_dim = embedding_dim
 

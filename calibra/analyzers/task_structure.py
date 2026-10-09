@@ -109,6 +109,19 @@ class TaskStructureAnalyzer(Analyzer):
         if batch.n_episodes == 0:
             return AnalyzerResult(analyzer_name=self.name)
 
+        if "actions" not in batch.capabilities:
+            short_flag, short_raw = self._check_short_episodes(batch)
+            return AnalyzerResult(
+                analyzer_name=self.name,
+                flags=[short_flag],
+                raw_metrics={
+                    "short_episodes": short_raw,
+                    "contact_density": {"skipped": "no action data"},
+                    "grasp_events": {"skipped": "no action data"},
+                    "trajectory_diversity": {"skipped": "no action data"},
+                },
+            )
+
         flags: list[RiskFlag] = []
         raw: dict = {}
 

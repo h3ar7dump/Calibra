@@ -28,11 +28,12 @@ class Episode:
     Single normalized episode.
 
     timestamps     : master clock, shape (T,), seconds (relative or epoch).
-    observations   : modality name → array (T, ...). Keys are format-agnostic
-                     names like "camera_rgb", "proprio", "depth".
+    observations   : modality name → array (T_modality, ...). Keys are format-agnostic
+                     names like "camera_rgb", "proprio", "depth". Independent-rate
+                     sensors provide their own obs_timestamps.
     obs_timestamps : per-modality timestamps when the sensor clock differs from
                      the master clock. Absent key means use `timestamps`.
-    actions        : shape (T, action_dim).
+    actions        : shape (T, action_dim), or (0, 0) when commands are absent.
     action_timestamps : when the action log has its own clock; None → use
                         `timestamps`.
     """
@@ -173,7 +174,7 @@ class EpisodeBatch:
         if self._capabilities_hint is not None:
             return self._capabilities_hint
 
-        caps = {"actions", "timestamps"}
+        caps = {"timestamps"}
         keys = {k.lower() for k in self.modalities}
         if any(tok in k for k in keys for tok in _IMAGE_TOKENS):
             caps.add("images")
@@ -187,6 +188,8 @@ class EpisodeBatch:
             if isinstance(self.episodes, LazyEpisodeList) and len(self.episodes) > 0
             else self.episodes
         )
+        if any(ep.actions.size > 0 for ep in probe_eps):
+            caps.add("actions")
         if any(ep.metadata.task_description for ep in probe_eps):
             caps.add("task_description")
         if any(ep.metadata.success is not None for ep in probe_eps):

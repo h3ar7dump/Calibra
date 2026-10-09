@@ -52,6 +52,8 @@ class WorldModelConsistencyAnalyzer(Analyzer):
     verbose     : if True, print training progress to stderr.
     """
 
+    requires = frozenset({"actions"})
+
     latent_dim: int = 64
     n_epochs: int = 60
     batch_size: int = 512

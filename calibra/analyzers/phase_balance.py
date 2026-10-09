@@ -78,6 +78,8 @@ class PhaseBalanceAnalyzer(Analyzer):
     n_bootstrap, ci_level : bootstrap CI parameters.
     """
 
+    requires = frozenset({"actions"})
+
     gripper_dims: Optional[list[int]] = None
     vel_slow_threshold: float = 0.08
     action_type: str = "position"

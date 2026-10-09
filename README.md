@@ -325,10 +325,13 @@ pip install 'calibra-robotics[lerobot]'           # LeRobot / HuggingFace Hub (r
 pip install 'calibra-robotics[hdf5]'              # HDF5 (Isaac Lab, Robomimic)
 pip install 'calibra-robotics[rlds]'              # RLDS / TF Datasets
 pip install 'calibra-robotics[mcap]'              # MCAP / ROS2 bags
+pip install 'calibra-robotics[lumos]'             # Lumos EGO video decoding
 pip install 'calibra-robotics[all]'               # everything
 ```
 
-**Formats supported:** LeRobot v1/v2/v3 (Parquet), HuggingFace Hub IDs, HDF5 (Isaac Lab, Robomimic), RLDS/TF Datasets, MCAP/ROS2 bags.
+**Formats supported:** LeRobot v1/v2/v3 (Parquet), HuggingFace Hub IDs, HDF5 (Isaac Lab, Robomimic), RLDS/TF Datasets, MCAP/ROS2 bags, and [Lumos EGO recordings](docs/lumos.md).
+
+Lumos supports single episodes, `meta_*.json` files, and directories of episodes with multiple `partXXXX` segments. Run `calibra integrity datasets/lumos --format lumos`, optionally with `--decode-images` for camera checks. Sensor clocks retain their native rates; robot-action diagnostics are listed as not evaluated.
 
 Camera-frame checks (`duplicate_frame_rate`, `camera_freeze_events`, `blurry_episode_fraction` in `calibra integrity`) work out of the box on HDF5/Isaac Lab/robomimic data, and on LeRobot **v1** datasets via `calibra integrity <path> --decode-images` (opt-in — decodes HuggingFace `Image`-feature columns, off by default since it increases load time/memory). Not yet supported for LeRobot v2/v3 (video-encoded).
 
