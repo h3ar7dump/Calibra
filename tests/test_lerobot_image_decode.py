@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import weakref
 from pathlib import Path
 
 import numpy as np
@@ -145,7 +146,9 @@ def _make_v2_dataset(tmp_path, n_episodes: int = 6, n_steps: int = 10, freeze_ep
         if ep == freeze_ep:
             frames[:8] = frames[0]
         # Write per-episode video
-        video_path = root / "videos" / "chunk-000" / "observation.images.top" / f"episode_{ep:06d}.mp4"
+        video_path = (
+            root / "videos" / "chunk-000" / "observation.images.top" / f"episode_{ep:06d}.mp4"
+        )
         _write_test_video(video_path, frames, fps=30)
 
         for step in range(n_steps):
@@ -287,7 +290,9 @@ class TestVideoDatasetResolver:
         with open(v3_path / "meta" / "info.json", encoding="utf-8") as f:
             info_v3 = json.load(f)
         resolver_v3 = VideoDatasetResolver(v3_path, info_v3)
-        v_path3, s_f3, n_f3 = resolver_v3.resolve_video_slice("observation.images.top", 1, ep_len=10)
+        v_path3, s_f3, n_f3 = resolver_v3.resolve_video_slice(
+            "observation.images.top", 1, ep_len=10
+        )
         assert v_path3 is not None
         assert v_path3.exists()
         assert s_f3 == 10
@@ -395,6 +400,72 @@ class TestLeRobotV2VideoDecoding:
 
 
 class TestLeRobotV3VideoDecoding:
+    @pytest.mark.parametrize("reader_path", ["duckdb", "pyarrow", "stream"])
+    @pytest.mark.parametrize("task_format", ["parquet", "jsonl"])
+    def test_multitask_video_reading_preserves_lazy_decoding(
+        self, tmp_path, monkeypatch, reader_path, task_format
+    ):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from calibra.ingestion.adapters import lerobot
+
+        path = _make_v3_dataset(tmp_path)
+        root = Path(path)
+        data_path = root / "data" / "chunk-000" / "episode_000000.parquet"
+        data = pq.read_table(data_path)
+        task_indices = [int(ep_id) % 2 for ep_id in data["episode_index"].to_pylist()]
+        pq.write_table(data.append_column("task_index", pa.array(task_indices)), data_path)
+        tasks = ["pick up the red block", "open the drawer"]
+        if task_format == "parquet":
+            pq.write_table(
+                pa.table({"task_index": [0, 1], "task": tasks}), root / "meta" / "tasks.parquet"
+            )
+        else:
+            (root / "meta" / "tasks.jsonl").write_text(
+                "".join(
+                    json.dumps({"task_index": i, "task": task}) + "\n"
+                    for i, task in enumerate(tasks)
+                )
+            )
+
+        decoded_slices = []
+        decode = lerobot._decode_video_frames
+
+        def track_decode(video_path, start_frame=0, num_frames=None):
+            decoded_slices.append((start_frame, num_frames))
+            return decode(video_path, start_frame, num_frames)
+
+        monkeypatch.setattr(lerobot, "_decode_video_frames", track_decode)
+        reader = LeRobotReader(decode_images=True)
+        if reader_path == "pyarrow":
+
+            def missing_duckdb(*args):
+                raise ImportError("DuckDB is unavailable")
+
+            monkeypatch.setattr(reader, "_build_duckdb_conn", missing_duckdb)
+        if reader_path == "stream":
+            episodes = reader.iter_episodes_lazy(path)
+        else:
+            batch = reader.read(path)
+            assert batch.extra["fps"] == 30.0
+            episodes = iter(batch.episodes)
+        assert decoded_slices == []
+
+        previous_frames = None
+        descriptions = []
+        for ep in episodes:
+            if previous_frames is not None:
+                assert previous_frames() is None, "Previous episode pixels stayed in memory"
+            descriptions.append(ep.metadata.task_description)
+            camera_key = next(key for key in ep.observations if "camera" in key)
+            frames = ep.observations[camera_key]
+            assert frames.shape == (10, 16, 16, 3)
+            previous_frames = weakref.ref(frames)
+            del frames
+        assert descriptions == tasks * 3
+        assert decoded_slices == [(i * 10, 10) for i in range(6)]
+
     def test_v3_default_excludes_images(self, tmp_path):
         path = _make_v3_dataset(tmp_path)
         batch = LeRobotReader().read(path)
@@ -420,7 +491,9 @@ class TestLeRobotV3VideoDecoding:
         episodes = list(reader.iter_episodes_lazy(path))
         assert len(episodes) == 6
         for ep in episodes:
-            image_keys = [k for k in ep.observations if "camera" in k.lower() or "image" in k.lower()]
+            image_keys = [
+                k for k in ep.observations if "camera" in k.lower() or "image" in k.lower()
+            ]
             assert image_keys
             assert ep.observations[image_keys[0]].shape == (10, 16, 16, 3)
 

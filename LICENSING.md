@@ -41,9 +41,12 @@ Apache conversion.
 
 If your intended use is restricted by the Additional Use Grant — for example,
 you want to offer Calibra as part of a hosted product — a commercial license is
-available. Contact **omertahtoko@gmail.com**.
+available. Contact **omertahtaci05@gmail.com**.
 
 ## Contributions
 
-By contributing, you agree your contributions are licensed under the same terms
-as the project.
+External pull requests are not accepted yet. When they open, contributors
+will sign the [Contributor License Agreement](CLA.md) before their first pull
+request is merged. It lets the project distribute contributions under the BSL,
+under Apache 2.0 after the Change Date, and under commercial licenses.
+Contributors keep the copyright in their work.

@@ -11,6 +11,7 @@ CLI entry point.
     python -m calibra prune <path> --keep FRACTION [--out coreset_index.json]
     python -m calibra review <path> [--top N] [--mode fast|full] [--group-by task] [--output episode_ids.json]
     python -m calibra integrity <path> [--format FORMAT] [--json]
+    python -m calibra audit <path> [--html-out report.html] [--json] [--policy FAMILY]
     python -m calibra corrupt <path> --drop-frames RATE [--add-jitter-ms STD] ...
     python -m calibra retarget <path> [--out DIR] [--obs-key-pos KEY] [--obs-key-quat KEY]
     python -m calibra sft-select <path|hub-id> --keep FRACTION [--out coreset_index.json]
@@ -52,34 +53,14 @@ from calibra import __version__
 from calibra.pipeline import Pipeline
 from calibra.schema.report import RiskLevel
 
+# Provided by the calibra_ee extension, not the core. Named here only so the
+# CLI can explain why they are missing instead of treating them as a path.
+_EXTENSION_COMMANDS = ("login", "logout", "whoami", "cloud")
+
 
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-V"):
         print(f"calibra {__version__}")
-        return
-
-    if len(sys.argv) > 1 and sys.argv[1] == "login":
-        from calibra.cloud.auth import run_login
-
-        run_login()
-        return
-
-    if len(sys.argv) > 1 and sys.argv[1] == "logout":
-        from calibra.cloud.auth import run_logout
-
-        run_logout()
-        return
-
-    if len(sys.argv) > 1 and sys.argv[1] == "whoami":
-        from calibra.cloud.auth import run_whoami
-
-        run_whoami()
-        return
-
-    if len(sys.argv) > 1 and sys.argv[1] == "cloud":
-        from calibra.cloud.push import run_cloud
-
-        run_cloud(sys.argv[2:])
         return
 
     if len(sys.argv) > 1 and sys.argv[1] == "site":
@@ -122,6 +103,12 @@ def main() -> None:
         from calibra.integrity import run_integrity
 
         run_integrity(sys.argv[2:])
+        return
+
+    if len(sys.argv) > 1 and sys.argv[1] == "audit":
+        from calibra.audit import run_audit
+
+        run_audit(sys.argv[2:])
         return
 
     if len(sys.argv) > 1 and sys.argv[1] == "sft-select":
@@ -280,9 +267,25 @@ def main() -> None:
                 print("Or use `calibra calibrate --global` to download community weights now.")
         return
 
+    # Commands added by installed extensions (ADR-012).
+    if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
+        from calibra.plugins import get_registry
+
+        handler = get_registry().commands.get(sys.argv[1])
+        if handler is not None:
+            handler(sys.argv[2:])
+            return
+        if sys.argv[1] in _EXTENSION_COMMANDS:
+            print(
+                f"error: `calibra {sys.argv[1]}` is a Calibra Cloud command and is not part "
+                "of the open-source core.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
     parser = argparse.ArgumentParser(
         prog="calibra",
-        description="Calibra — dataset reliability diagnostics for robotics IL",
+        description="Calibra: dataset reliability diagnostics for robotics IL",
         epilog="Run 'calibra compare <path> <reference>' to compare against a reference profile.",
     )
     parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
@@ -331,6 +334,9 @@ def main() -> None:
         ),
     )
 
+    from calibra.dataset_profiles import add_profile_argument
+
+    add_profile_argument(parser)
     args = parser.parse_args()
 
     reader = None
@@ -343,7 +349,7 @@ def main() -> None:
 
         cache = AuditCache(args.cache_dir)
 
-    pipeline = Pipeline()
+    pipeline = Pipeline(profile=args.profile)
     try:
         report = pipeline.analyze_path(
             args.path,
@@ -357,9 +363,9 @@ def main() -> None:
 
     outliers = None
     if not args.no_anomalies:
-        from calibra.anomalies import find_outliers
+        from calibra.anomalies import calibration_dataset_id, find_outliers
 
-        outliers = find_outliers(report)
+        outliers = find_outliers(report, dataset=calibration_dataset_id(args.path))
 
     if args.html_out:
         from calibra.report_html import generate_html_report

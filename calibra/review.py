@@ -44,7 +44,7 @@ def run_review(argv: list[str]) -> None:
         default="full",
         help=(
             "'full' (default) runs every analyzer, including coverage_value. "
-            "'fast' restricts to cheap action/timestamp-only diagnostics — "
+            "'fast' restricts to cheap action/timestamp-only diagnostics, "
             "quicker on very large datasets, but coverage_value will be "
             "unavailable and fewer anomaly reasons will be found."
         ),
@@ -80,6 +80,9 @@ def run_review(argv: list[str]) -> None:
         action="store_true",
         help="Print the ranked queue as JSON instead of human-readable text",
     )
+    from calibra.dataset_profiles import add_profile_argument
+
+    add_profile_argument(p)
     args = p.parse_args(argv)
 
     dataset_path = args.path
@@ -107,7 +110,7 @@ def run_review(argv: list[str]) -> None:
     log(f"  {batch.n_episodes} episodes  ·  {batch.n_samples} steps")
     log(f"Running diagnostic pipeline (mode={args.mode}) ...")
     try:
-        report = Pipeline(mode=args.mode).run(batch)
+        report = Pipeline(mode=args.mode, profile=args.profile).run(batch)
     except Exception as exc:
         print(f"error running pipeline: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -154,7 +157,7 @@ def _assessment_to_dict(a: EpisodeAssessment) -> dict:
 
 def render(top: list[EpisodeAssessment], n_episodes: int, group_by: list[str] | None) -> str:
     if not top:
-        return "No episodes ranked — the pipeline produced no per-episode metrics to compare."
+        return "No episodes ranked; the pipeline produced no per-episode metrics to compare."
 
     lines = [
         "─── Episode Review Queue " + "─" * 32,
@@ -179,7 +182,7 @@ def render(top: list[EpisodeAssessment], n_episodes: int, group_by: list[str] | 
         lines.append("")
 
     lines.append(
-        "This is a ranked queue, not a verdict — an unusual episode may be a "
+        "This is a ranked queue, not a verdict. An unusual episode may be a "
         "recovery behavior or a valuable rare state, not a defect."
     )
     lines.append("─" * 58)

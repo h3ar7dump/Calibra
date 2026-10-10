@@ -34,6 +34,7 @@ from calibra.analyzers.base import Analyzer
 from calibra.analyzers.blur import BlurAnalyzer
 from calibra.analyzers.calibration_drift import CalibrationDriftAnalyzer
 from calibra.analyzers.camera_freeze import CameraFreezeAnalyzer
+from calibra.analyzers.camera_view import CameraViewMismatchAnalyzer
 from calibra.analyzers.duplicate_frame import DuplicateFrameAnalyzer
 from calibra.analyzers.smoothness import ControlSmoothnessAnalyzer
 from calibra.analyzers.task_structure import TaskStructureAnalyzer
@@ -64,6 +65,7 @@ _INTEGRITY_METRICS = frozenset(
         "blurry_episode_fraction",
         "video_fps_mismatch",
         "video_vfr_jitter_cv",
+        "camera_view_name_mismatch",
         "ldlj",
         "jerk_spike_rate",
         "velocity_discontinuity_rate",
@@ -197,7 +199,7 @@ def run_integrity(argv: list[str]) -> None:
             "Fail CI (exit 1) on ANY CRITICAL finding, including context-dependent "
             "motion-review ones (ldlj, jerk_spike_rate, velocity_discontinuity_rate). "
             "Default only fails on objective acquisition/format/sync/completeness "
-            "failures — see 'suggested_action' on each finding. Mutually exclusive "
+            "failures; see 'suggested_action' on each finding. Mutually exclusive "
             "with --policy."
         ),
     )
@@ -211,6 +213,9 @@ def run_integrity(argv: list[str]) -> None:
             "with --strict."
         ),
     )
+    from calibra.dataset_profiles import add_profile_argument
+
+    add_profile_argument(p)
     args = p.parse_args(argv)
 
     if args.strict and args.policy:
@@ -295,6 +300,7 @@ def run_integrity(argv: list[str]) -> None:
             CameraFreezeAnalyzer(),
             BlurAnalyzer(),
             VideoFramerateAnalyzer(),
+            CameraViewMismatchAnalyzer(),
             ControlSmoothnessAnalyzer(),
             CalibrationDriftAnalyzer(),
         ]
@@ -306,7 +312,9 @@ def run_integrity(argv: list[str]) -> None:
             check_pbar.update(current, total=total, message=message)
 
         try:
-            report = Pipeline(analyzers=analyzers).run(batch, progress_callback=check_callback)
+            report = Pipeline(analyzers=analyzers, profile=args.profile).run(
+                batch, progress_callback=check_callback
+            )
         finally:
             check_pbar.close()
     except Exception as exc:

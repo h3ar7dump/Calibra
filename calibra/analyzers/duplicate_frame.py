@@ -6,11 +6,13 @@ preceding them — a signal that the capture pipeline logged the same image
 twice (dropped grab, buffered frame re-emitted, or a stalled sensor driver)
 rather than a genuinely new observation.
 
-Reuses `calibra.temporal.drift.compute_visual_activity` (mean absolute
-pixel difference between consecutive frames) as the detection primitive;
-a transition with near-zero activity is a duplicate. This is a single-frame
-signal — a *sustained run* of duplicates is the separate, more severe
-`CameraFreezeAnalyzer` finding.
+A transition is a duplicate when (almost) no pixel changed beyond a small
+noise tolerance (`repeated_transitions`). This deliberately does *not* use
+the mean absolute pixel difference: a small object moving in a low-resolution
+frame (e.g. the PushT agent at 96×96) changes only ~0.2% of pixels, which
+averages to near zero even though the camera is live, whereas a re-emitted
+frame changes no pixels at all. This is a single-frame signal — a *sustained
+run* of duplicates is the separate, more severe `CameraFreezeAnalyzer` finding.
 """
 
 from __future__ import annotations
@@ -28,7 +30,14 @@ from calibra.schema.report import AnalyzerResult, ObservedValue, RiskFlag, RiskL
 
 _VISUAL_KEYS = frozenset(["camera", "image", "rgb", "depth", "visual"])
 
-_DUPLICATE_ACTIVITY_THRESHOLD = 0.5  # mean abs pixel diff below this = duplicate transition
+# A pixel "changed" if any channel moved by more than this (0–255 scale). Kept
+# low on purpose: sensor noise on a live camera changes most pixels by a few
+# levels even when the scene is still, and that noise is what distinguishes a
+# live static view from a re-emitted frame. This only absorbs rounding jitter.
+_PIXEL_TOLERANCE = 2.0
+# A transition is a repeat when fewer than this fraction of pixels changed
+# (0.05% ≈ 5 pixels at 96×96, ≈ 150 at 640×480).
+_MIN_CHANGED_FRACTION = 5e-4
 _DUPLICATE_WARNING = 0.05  # 5% of transitions duplicated
 _DUPLICATE_CRITICAL = 0.15  # 15%
 
@@ -42,29 +51,54 @@ def _find_image_obs(ep: Episode, min_frames: int = 2) -> Optional[np.ndarray]:
     return None
 
 
-def _get_or_compute_visual_activity(ep: Episode) -> Optional[np.ndarray]:
-    cached = getattr(ep, "_cached_visual_activity", None)
-    if cached is not None:
-        return cached
+def repeated_transitions(
+    images: np.ndarray,
+    pixel_tolerance: float = _PIXEL_TOLERANCE,
+    min_changed_fraction: float = _MIN_CHANGED_FRACTION,
+) -> np.ndarray:
+    """
+    Boolean mask, one entry per frame transition: True where the next frame
+    repeats the previous one (fewer than `min_changed_fraction` of pixels
+    changed by more than `pixel_tolerance` on a 0–255 scale).
 
+    Float images in [0, 1] are rescaled to 0–255. Frames are compared one
+    transition at a time so large (T, H, W, C) arrays are never duplicated.
+    """
+    imgs = np.asarray(images)
+    scale = 255.0 if imgs.dtype.kind == "f" and float(imgs.max(initial=0.0)) <= 1.0 else 1.0
+    repeated = np.empty(len(imgs) - 1, dtype=bool)
+    for t in range(len(imgs) - 1):
+        diff = np.abs(imgs[t + 1].astype(np.float32) - imgs[t].astype(np.float32)) * scale
+        changed = diff > pixel_tolerance
+        if changed.ndim == 3:  # (H, W, C): a pixel changed if any channel did
+            changed = changed.any(axis=-1)
+        repeated[t] = changed.mean() < min_changed_fraction
+    return repeated
+
+
+def _episode_duplicate_fraction(
+    ep: Episode, pixel_tolerance: float, min_changed_fraction: float
+) -> Optional[float]:
+    repeated = _get_or_compute_repeated_transitions(ep, pixel_tolerance, min_changed_fraction)
+    if repeated is None:
+        return None
+    return float(np.mean(repeated))
+
+
+def _get_or_compute_repeated_transitions(
+    ep: Episode, pixel_tolerance: float, min_changed_fraction: float
+) -> Optional[np.ndarray]:
+    """Share the repeat mask between duplicate-frame and camera-freeze checks."""
     images = _find_image_obs(ep)
     if images is None:
         return None
-    from calibra.temporal.drift import compute_visual_activity
-
-    activity = compute_visual_activity(images)
-    try:
-        setattr(ep, "_cached_visual_activity", activity)
-    except Exception:
-        pass
-    return activity
-
-
-def _episode_duplicate_fraction(ep: Episode, activity_threshold: float) -> Optional[float]:
-    activity = _get_or_compute_visual_activity(ep)
-    if activity is None:
-        return None
-    return float(np.mean(activity < activity_threshold))
+    settings = (pixel_tolerance, min_changed_fraction)
+    cached = getattr(ep, "_cached_repeated_transitions", None)
+    if cached is not None and cached[0] is images and cached[1] == settings:
+        return cached[2]
+    repeated = repeated_transitions(images, pixel_tolerance, min_changed_fraction)
+    setattr(ep, "_cached_repeated_transitions", (images, settings, repeated))
+    return repeated
 
 
 @dataclass
@@ -74,17 +108,20 @@ class DuplicateFrameAnalyzer(Analyzer):
 
     Parameters
     ----------
-    activity_threshold : mean abs pixel difference below which a frame
-                          transition counts as a duplicate. Provisional
-                          default — tune against your own camera/exposure
-                          settings if this over- or under-fires.
+    pixel_tolerance      : per-pixel change (0–255 scale) that counts as a real
+                           change rather than codec noise.
+    min_changed_fraction : a transition with fewer changed pixels than this
+                           fraction is a duplicate. Provisional defaults —
+                           tune against your own camera if this over- or
+                           under-fires.
     warning, critical   : duplicate-frame-rate thresholds for risk level.
     n_bootstrap, ci_level : bootstrap CI parameters, matching TemporalAnalyzer.
     """
 
     requires = frozenset({"images"})
 
-    activity_threshold: float = _DUPLICATE_ACTIVITY_THRESHOLD
+    pixel_tolerance: float = _PIXEL_TOLERANCE
+    min_changed_fraction: float = _MIN_CHANGED_FRACTION
     warning: float = _DUPLICATE_WARNING
     critical: float = _DUPLICATE_CRITICAL
     n_bootstrap: int = 1000
@@ -103,7 +140,8 @@ class DuplicateFrameAnalyzer(Analyzer):
             return AnalyzerResult(analyzer_name=self.name)
 
         ep_values: list[Optional[float]] = [
-            _episode_duplicate_fraction(ep, self.activity_threshold) for ep in batch.episodes
+            _episode_duplicate_fraction(ep, self.pixel_tolerance, self.min_changed_fraction)
+            for ep in batch.episodes
         ]
         checked = [(ep, v) for ep, v in zip(batch.episodes, ep_values) if v is not None]
 

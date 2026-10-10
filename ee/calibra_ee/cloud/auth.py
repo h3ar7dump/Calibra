@@ -1,4 +1,4 @@
-"""calibra.cloud.auth — token storage and identity for Calibra Cloud."""
+"""calibra_ee.cloud.auth — token storage and identity for Calibra Cloud."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def _call_me(token: str) -> dict | None:
 
 
 def run_login() -> None:
-    print(f"Log in to Calibra Cloud — {_CLOUD_URL}")
+    print(f"Log in to Calibra Cloud: {_CLOUD_URL}")
     print(f"Get your API token at: {_CLOUD_URL}/settings/tokens")
     print()
     try:

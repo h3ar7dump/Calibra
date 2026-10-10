@@ -34,7 +34,7 @@ from typing import Optional
 
 import numpy as np
 
-from calibra.analyzers.base import Analyzer
+from calibra.analyzers.base import Analyzer, default_gripper_dims
 from calibra.schema.episode import Episode, EpisodeBatch
 from calibra.schema.report import AnalyzerResult, ObservedValue, RiskFlag, RiskLevel
 
@@ -127,7 +127,7 @@ class CalibrationDriftAnalyzer(Analyzer):
 
     requires = frozenset({"proprio"})
 
-    gripper_dims: list[int] = field(default_factory=lambda: [-1])
+    gripper_dims: list[int] = field(default_factory=default_gripper_dims)
     stable_vel_frac: float = _STABLE_VEL_FRAC
     min_stable_run: int = _MIN_STABLE_RUN
     min_stable_frames: int = _MIN_STABLE_FRAMES
@@ -177,7 +177,7 @@ class CalibrationDriftAnalyzer(Analyzer):
                         observed=ObservedValue(value=None),
                         interpretation=(
                             "No paired action/state observations with a sustained "
-                            "stationary hold were found — calibration drift check skipped."
+                            "stationary hold were found, so the calibration drift check was skipped."
                         ),
                         implication="Calibration drift detection was skipped.",
                     )
@@ -197,7 +197,7 @@ class CalibrationDriftAnalyzer(Analyzer):
                         observed=ObservedValue(value=None),
                         interpretation=(
                             f"Only {n_stable} stable frames found across the dataset "
-                            f"(need >= {self.min_stable_frames}) — too few for a reliable "
+                            f"(need >= {self.min_stable_frames}), too few for a reliable "
                             "per-motor offset estimate."
                         ),
                         implication="Calibration drift detection was skipped.",
@@ -263,8 +263,8 @@ class CalibrationDriftAnalyzer(Analyzer):
                     f"(|mean|/std = {motor['consistency']:.1f})."
                 ),
                 implication=(
-                    "A stable per-motor action/state offset during holds — not during "
-                    "motion — is the signature of a leader/follower calibration drift "
+                    "A stable per-motor action/state offset during holds (not during "
+                    "motion) is the signature of a leader/follower calibration drift "
                     "(see LeRobot issue #3758: an unnoticed joint offset trained fine "
                     "but caused consistent under/overshoot at deployment). This is a "
                     "review signal, not proof of a broken dataset: verify the leader/"

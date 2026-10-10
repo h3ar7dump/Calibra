@@ -121,12 +121,12 @@ class TestRetargetCLIOutputFiles:
                 run_retarget(["/dummy/path", "--out", tmp])
 
             for f in Path(tmp).glob("*.npz"):
-                data = np.load(f, allow_pickle=True)
-                assert "relative_actions" in data
-                arr = data["relative_actions"]
-                # T=10, no pad → shape should be (9, 6)
-                assert arr.shape == (9, 6)
-                assert arr.dtype == np.float32
+                with np.load(f, allow_pickle=True) as data:
+                    assert "relative_actions" in data
+                    arr = data["relative_actions"]
+                    # T=10, no pad → shape should be (9, 6)
+                    assert arr.shape == (9, 6)
+                    assert arr.dtype == np.float32
 
     def test_action_shape_is_T_minus_1_by_6(self):
         n_steps = 20
@@ -138,8 +138,8 @@ class TestRetargetCLIOutputFiles:
                 run_retarget(["/dummy/path", "--out", tmp])
 
             f = next(Path(tmp).glob("*.npz"))
-            data = np.load(f)
-            assert data["relative_actions"].shape == (n_steps - 1, 6)
+            with np.load(f) as data:
+                assert data["relative_actions"].shape == (n_steps - 1, 6)
 
     def test_pad_flag_extends_to_T_rows(self):
         n_steps = 20
@@ -151,8 +151,8 @@ class TestRetargetCLIOutputFiles:
                 run_retarget(["/dummy/path", "--out", tmp, "--pad"])
 
             f = next(Path(tmp).glob("*.npz"))
-            data = np.load(f)
-            assert data["relative_actions"].shape == (n_steps, 6)
+            with np.load(f) as data:
+                assert data["relative_actions"].shape == (n_steps, 6)
 
     def test_pad_last_row_is_zero(self):
         batch = _make_eef_batch(n_episodes=1, n_steps=15)
@@ -163,8 +163,8 @@ class TestRetargetCLIOutputFiles:
                 run_retarget(["/dummy/path", "--out", tmp, "--pad"])
 
             f = next(Path(tmp).glob("*.npz"))
-            data = np.load(f)
-            np.testing.assert_allclose(data["relative_actions"][-1], 0.0)
+            with np.load(f) as data:
+                np.testing.assert_allclose(data["relative_actions"][-1], 0.0)
 
     def test_out_dir_created_if_missing(self):
         batch = _make_eef_batch(n_episodes=1, n_steps=10)

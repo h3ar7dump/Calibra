@@ -5,7 +5,7 @@ Each ADR captures the context, decision, alternatives considered, and consequenc
 at the time the decision was made.
 
 ADRs are append-only. A superseded decision should have its status updated and
-a new ADR written to replace it — the original is never deleted.
+a new ADR written to replace it; the original is never deleted.
 
 ## Index
 
@@ -21,3 +21,5 @@ a new ADR written to replace it — the original is never deleted.
 | [ADR-008](adr-008-claims-registry.md) | Evidence-backed falsifiable claims registry | Accepted |
 | [ADR-009](adr-009-two-phase-pipeline.md) | Two-phase pipeline: Phase 1 analysis then Phase 2 comparison | Accepted |
 | [ADR-010](adr-010-claims-references-parity.md) | Claims/references parity rule | Accepted |
+| [ADR-011](adr-011-dataset-decision-layer.md) | Dataset decision layer: analysis outputs support both pruning and metadata annotation | Accepted |
+| [ADR-012](adr-012-apache-core-boundary.md) | Apache 2.0 core and separately licensed commercial code | Proposed |

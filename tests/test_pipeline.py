@@ -261,4 +261,3 @@ class TestReproducibilityMetadata:
         assert len(calls) > 0
         assert calls[-1][0] == len(pipeline.analyzers)
         assert calls[-1][1] == len(pipeline.analyzers)
-

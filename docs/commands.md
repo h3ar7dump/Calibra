@@ -4,6 +4,53 @@ Full documentation for all Calibra CLI commands. For a quick overview see the [R
 
 ---
 
+## Dataset profiles
+
+Some analyzer defaults encode assumptions that do not hold for every dataset. The
+main one: smoothness checks (`ldlj`, `jerk_spike_rate`,
+`velocity_discontinuity_rate`) and calibration drift leave out the **last action
+dimension** as a gripper (`gripper_dims=[-1]`). That suits most arm datasets but
+not PushT, whose 2-D action is an `(x, y)` target with no gripper, so the default
+ignores its `y` axis.
+
+A profile can also set the thresholds `calibra analyze` uses to pick a noise
+regime. The global thresholds were calibrated on 50 Hz arm datasets (ALOHA,
+DROID-100). PushT's actions are absolute `(x, y)` targets from mouse teleop at
+10 Hz, where abrupt direction changes are normal: its clean
+velocity-discontinuity rate is 16.7%, above the global HIGH NOISE cutoff of 13%,
+which would make `analyze` filter normal PushT motion as corruption.
+
+A dataset profile overrides these settings for the datasets it names, without
+changing them for anyone else:
+
+| Profile | Applied automatically to | Settings |
+|---|---|---|
+| `pusht` | `lerobot/pusht`, `lerobot/pusht_image` | `gripper_dims=[]`: score both axes. Regime `disc_high=0.25` (about 1.5× PushT's clean rate) instead of 0.13. `prune` Stage 1 limits `max_spike_rate=0.25`, `max_vel_disc_rate=0.40` instead of 0.10 / 0.25, which sit at PushT's own clean p95 and remove clean PushT episodes. Smoothness stays in the default position mode, which is correct: PushT actions are absolute target positions, not velocities. |
+
+```bash
+calibra audit lerobot/pusht                     # profile applied automatically
+calibra prune ./datasets/pusht --profile pusht  # local copy: pass it explicitly
+```
+
+- A local copy has no Hub ID, so it only gets the profile with `--profile`.
+  Without it, `./datasets/pusht` is analysed with the defaults and gives
+  different results from `lerobot/pusht`.
+- `--profile` is supported by `integrity`, `audit`, `review`, `prune`,
+  `analyze`, and `score`. In Python: `Pipeline(profile="pusht")`.
+- A profile only replaces *defaults*. An analyzer you configure yourself (e.g.
+  `calibra compare --gripper-dims 0`) keeps your setting, `prune --max-spike-rate`
+  / `--max-vel-disc-rate` beat the profile's limits (and `--policy gr00t` still
+  tightens them), and
+  `diagnose_regime(report, custom_thresholds=...)` overrides the profile's
+  regime thresholds. The regime explanation names the profile when it applied.
+- Reports record the applied profile in `dataset_profile`, and it is part of
+  `config_hash` and the `--cache-dir` key, so profiled and unprofiled results
+  are never mixed up.
+
+Profiles live in `calibra/dataset_profiles.py`.
+
+---
+
 ## `calibra integrity` — "Can I trust this dataset?"
 
 ```bash
@@ -59,36 +106,39 @@ calibra analyze /data/robot_demos --json
 ```
 
 ```
-────────────────────────────────────────────────────────────
+$ calibra analyze lerobot/pusht --policy act
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   CALIBRA ANALYSIS
-────────────────────────────────────────────────────────────
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Dataset
-    Name       : lerobot/pusht
+    Name       : pusht
     Episodes   : 206
     Frames     : 25,650
     Format     : lerobot
-
-──────────────────────────────────────────────────────────
+    Tasks      : 1 distinct
+    Action dim : 2
+    Policy     : ACT
+────────────────────────────────────────────────────────────
   Integrity
     ✅ Timestamps & sync
     ✅ Episode structure
-    ✅ Camera feed
-    ✅ Motion & control
-    Integrity score: 95/100 — Healthy
-──────────────────────────────────────────────────────────
-  Quality (Calibra Score)     76.7 / 100   —  Good
-  Coverage / diversity        68.2 / 100
-  Redundancy (estimated)      41.0%  of state-space occupies duplicate regions
-──────────────────────────────────────────────────────────
+    ·   Camera feed  (not evaluated)
+    ❌ Motion & control
+    Integrity score: 69/100 · Critical
+────────────────────────────────────────────────────────────
+  Quality (Calibra Score)    44.6 / 100   ·  Poor
+  Coverage / diversity       47.4 / 100
+  Redundancy (estimated)     3.2%  of state-space occupies duplicate regions
+────────────────────────────────────────────────────────────
   RECOMMENDATION
 
-    Regime             : Redundancy-dominated
-    Training set       : 52 / 206 episodes
-    Expected retention : 25%
+    Regime             : MODERATE NOISE
+    Training set       : 175 / 206 episodes
+    Expected retention : 85%
 
     Reasons:
-      • removes 6 corrupted/low-quality episodes
-      • removes 148 redundant episodes (diversity selection)
+      • removes 31 redundant episodes (diversity selection)
       • preserves behavioral coverage via greedy max-coverage selection
 
     This is a heuristic starting point (~1 - measured redundancy), not a
@@ -97,10 +147,10 @@ calibra analyze /data/robot_demos --json
     production training run to this number.
 
     Export this coreset: calibra analyze <path> --export coreset_index.json
-────────────────────────────────────────────────────────────
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-The single-command "is this trustworthy, how good is it, what should I train on" report — the same story that otherwise takes three separate commands (`calibra integrity` for trust, `calibra audit`-style scoring for quality, `calibra prune` for a coreset) to assemble by hand. Nothing here is a new metric: it's the existing analyzers, the existing Calibra Score, and the existing regime-adaptive coreset selector (see `calibra prune`), composed into one report object.
+The single-command "is this trustworthy, how good is it, what should I train on" report — the same story that otherwise takes three separate commands (`calibra integrity` for trust, `calibra audit`-style scoring for quality, `calibra prune` for a coreset) to assemble by hand. Nothing here is a new metric: it's the existing analyzers, the existing Calibra Score, and the existing regime-adaptive diversity selector (`calibra prune --strategy diversity`; note that `calibra prune` with no `--policy` defaults to the world-model strategy instead), composed into one report object.
 
 | Flag | Description |
 |---|---|
@@ -242,6 +292,9 @@ calibra prune demos.hdf5 --keep 0.3 --policy gr00t --report results/franka/lates
 
 # Incremental analysis: skip re-running the pipeline on unchanged episodes
 calibra prune /data/demos.h5 --keep 0.3 --cache-dir .calibra/cache --report results/latest.json
+
+# Annotate mode: keep every episode, write a per-episode metadata sidecar instead
+calibra prune /data/demos.h5 --keep 0.3 --annotate ./calibra_meta/
 ```
 
 ```
@@ -265,6 +318,8 @@ Two-stage pipeline:
 Use `--entropy-weight 0.4` (or `--policy gr00t`) to bias selection toward high-entropy (informationally rich) episodes. Use `--strategy influence` to select episodes based on estimated learning value (combining action novelty, task contact representation, and Shannon entropy).
 
 `--report PATH` writes a schema-versioned **CalibraReport JSON** with `episode_verdicts` — approved/rejected episode IDs, per-episode reason codes (e.g. `jerk_spike`, `diversity_pruned`), quality scores, and SHA-256 content hashes.
+
+`--annotate DIR` switches to **annotate mode**: instead of only removing episodes, it writes a training-ready per-episode sidecar (`calibra_annotations.jsonl` + a self-describing `.manifest.json`) that keeps every episode with its disposition (`KEEP` / `DROP` / `ANNOTATE`) and characterization (`quality_risk`, `coverage_value`, `anomaly_score`, …) attached. Redundant episodes are marked `ANNOTATE` — keep them if your trainer conditions on the metadata. Default `--out` / `--report` output is unaffected. See [Annotate Mode](annotate.md).
 
 `--cache-dir DIR` caches the diagnostic pipeline result keyed by episode manifest fingerprint. On repeated runs with unchanged data, skips the pipeline — typically 10–50× faster on large datasets collected incrementally.
 
@@ -588,6 +643,45 @@ calibra experiment report --experiment-id partner-a-pusht --json
 Records the *results* of real training runs — GPU-hours, wall-clock time, energy, eval success rate — against the design-partner protocol's three conditions (`full`, `random`, `calibra`) at a given retention percentage. This command doesn't run training itself; training happens in whatever pipeline the partner already uses (`lerobot-train`, a custom loop, etc.) — `calibra experiment` just logs what came out of it, consistently, so it can be compared and fed into `calibra benchmark --experiment-id`.
 
 Stored as JSON Lines at `~/.calibra/experiments.jsonl` by default (override with `--path`). Local only — never synced to any network endpoint, matching the rest of Calibra's on-prem posture.
+
+### Reading measured values from a finished run
+
+Instead of retyping numbers into `--gpu-hours` / `--eval-success-rate` / `--wall-clock-seconds`, point `--from-metrics` at what the training job already wrote:
+
+```bash
+# a flat metrics JSON, or a run directory containing one
+calibra experiment record --experiment-id partner-a-pusht \
+    --condition calibra --retention 25 --policy act --embodiment so-100 --task pushing \
+    --from-metrics runs/calibra-25/metrics.json
+
+# a Weights & Biases offline run summary (read from disk — no network, no wandb import)
+calibra experiment record --experiment-id partner-a-pusht \
+    --condition calibra --retention 25 \
+    --from-metrics wandb/latest-run/files/wandb-summary.json
+
+# see what would be recorded without writing anything
+calibra experiment record ... --from-metrics runs/calibra-25/ --dry-run
+```
+
+Recognised keys are matched by a built-in alias table (`gpu_hours`/`gpu_hrs`/`gpu_time_h`, `success_rate`/`eval/success_rate`/`sr`, `_runtime`/`train_runtime`/`elapsed_sec`, `loss`/`train/loss`/`final_loss`, `energy_kwh`, …); nested keys are flattened. When a source uses a name the aliases miss, map it explicitly (repeatable):
+
+```bash
+--map eval_success_rate=results.eval.success --map gpu_hours=timing.gpu_h
+```
+
+An `eval_success_rate` read as a value in `(1, 100]` is divided by 100 and flagged as read-as-percent. **`gpu_hours` is only ever taken when it is literally in the source** — it is never derived from wall-clock × GPU count, so a derived figure can't be mistaken for a measured one by `calibra benchmark`'s measured/simulated classifier; pass `--gpu-hours` yourself to record a derived value. An explicit flag always overrides the metrics file. The provenance string (`wandb:…` / `json:…`) is stored on the record as `metrics_source`.
+
+### Rolling up dataset characteristics
+
+`--from-review` folds a `calibra review --json` file's per-episode assessments into the record's `mean_anomaly_score` / `mean_quality_risk` / `mean_coverage_value`, so one command captures both the dataset side and the training-outcome side of an experiment:
+
+```bash
+calibra review partner-a/pusht_v3 --top 300 -o review.json   # must cover every episode
+calibra experiment record --experiment-id partner-a-pusht \
+    --condition calibra --retention 25 --from-review review.json
+```
+
+The file must cover the whole dataset (`--top >= n_episodes`); a partial review queue is rejected rather than logged as a biased dataset-level mean.
 
 `calibra experiment report` prints the full retention curve for one experiment, the Calibra-vs-random delta at each level, and which `(retention%, condition)` pairs the protocol still expects but haven't been recorded (`10/25/50/75/100%` × `full/random/calibra`, minus the combinations that don't apply — `full` only at 100%, `random`/`calibra` never at 100%).
 

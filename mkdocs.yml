@@ -1,7 +1,7 @@
 site_name: Calibra
 site_description: Dataset observability and coreset selection for robotics imitation learning.
-site_url: https://omertt.github.io/Calibra/
-repo_url: https://github.com/omertt27/Calibra
+site_url: https://calibra-robotics.github.io/Calibra/
+repo_url: https://github.com/Calibra-Robotics/Calibra
 edit_uri: edit/main/docs/
 
 theme:
@@ -47,7 +47,9 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Using Calibra: guide.md
   - Integrity Checks: integrity.md
+  - Annotate Mode: annotate.md
   - Command Reference: commands.md
   - Interactive Playground: /Calibra/
   - Claims Registry: claims.md
@@ -63,5 +65,7 @@ nav:
     - "ADR-008: Claims registry": adr/adr-008-claims-registry.md
     - "ADR-009: Two-phase pipeline": adr/adr-009-two-phase-pipeline.md
     - "ADR-010: Claims references parity": adr/adr-010-claims-references-parity.md
+    - "ADR-011: Dataset decision layer": adr/adr-011-dataset-decision-layer.md
+    - "ADR-012: Apache core boundary": adr/adr-012-apache-core-boundary.md
   - Blog Post: hf_blog_post.md
   - Contributing: contributing.md

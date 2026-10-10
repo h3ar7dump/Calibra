@@ -1,7 +1,7 @@
 # Calibra
 
 <p align="center">
-  <img src="logo.svg" alt="Calibra — train on less robot data, spend less compute" width="480"/>
+  <img src="logo.svg" alt="Calibra: train on less robot data, spend less compute" width="480"/>
 </p>
 
 **Stop wasting GPU hours on robot data that doesn't improve your policy.**
@@ -38,6 +38,8 @@ graph LR
 | 4. Optimize | Can I train faster/cheaper? | `calibra prune` | [Command Reference](commands.md) |
 
 Integrity checks are deliberately the first thing Calibra runs: timestamp sync, episode completeness, and camera freeze/duplicate-frame detection catch the failures practitioners hit most often, before anything about quality or diversity matters. See [Integrity Checks](integrity.md) for the full list.
+
+**New here?** [Using Calibra](guide.md) walks through all four steps end to end on one dataset, with annotated output and how to read each score.
 
 ---
 

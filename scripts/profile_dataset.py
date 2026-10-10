@@ -58,6 +58,7 @@ import numpy as np
 _REPO = Path(__file__).parent.parent
 sys.path.insert(0, str(_REPO))
 
+from calibra.analyzers.base import parse_gripper_dims  # noqa: E402
 from calibra.analyzers.coverage import CoverageEntropyAnalyzer  # noqa: E402
 from calibra.analyzers.smoothness import ControlSmoothnessAnalyzer  # noqa: E402
 from calibra.analyzers.task_structure import TaskStructureAnalyzer  # noqa: E402
@@ -215,10 +216,7 @@ def main() -> None:
         reader = _get_reader(args.format)
 
     # Resolve gripper dims
-    gripper_dims: list[int] = [-1]
-    if args.gripper_dims is not None:
-        raw = args.gripper_dims.strip()
-        gripper_dims = [int(x) for x in raw.split(",") if x.strip()] if raw else []
+    gripper_dims = parse_gripper_dims(args.gripper_dims)
 
     log(f"Loading {dataset!r} ...")
     try:
@@ -232,17 +230,50 @@ def main() -> None:
         ep0 = batch.episodes[0]
         log(f"  action_dim={ep0.action_dim}  modalities={sorted(batch.modalities)}")
 
+    # ControlSmoothnessAnalyzer only knows how to differentiate "position",
+    # "velocity", or "acceleration" signals (see action_type in smoothness.py).
+    # --control-mode has two extra choices ("torque", "unknown") that have no
+    # direct mapping — fall back to the analyzer's own default ("position")
+    # for those rather than passing through a value it would reject.
+    if args.control_mode in ("position", "velocity"):
+        action_type = args.control_mode
+    else:
+        action_type = "position"
+        log(
+            f"warning: --control-mode={args.control_mode!r} has no direct smoothness "
+            "action_type mapping; LDLJ/jerk/velocity-discontinuity metrics are computed "
+            "as if action_type='position'. Pass --control-mode position|velocity for "
+            "accurate motion-quality interpretation."
+        )
+
     log("Running Calibra pipeline ...")
     pipeline = Pipeline(
         analyzers=[
             TemporalAnalyzer(),
-            ControlSmoothnessAnalyzer(gripper_dims=gripper_dims),
+            ControlSmoothnessAnalyzer(action_type=action_type, gripper_dims=gripper_dims),
             CoverageEntropyAnalyzer(),
             TaskStructureAnalyzer(),
         ]
     )
     report = pipeline.run(batch)
     log("Pipeline complete.")
+
+    # A Hub ID's dataset profile replaces the default gripper dims inside
+    # Pipeline.run when --gripper-dims is omitted. Record the dims actually
+    # applied, not the default the analyzer was built with.
+    if report.dataset_profile:
+        from calibra.dataset_profiles import apply_profile, get_profile
+
+        applied = apply_profile(
+            [ControlSmoothnessAnalyzer(gripper_dims=gripper_dims)],
+            get_profile(report.dataset_profile),
+        )[0].gripper_dims
+        if applied != gripper_dims:
+            log(
+                f"  [profile {report.dataset_profile}] gripper_dims {gripper_dims} "
+                f"replaced by {applied}"
+            )
+        gripper_dims = list(applied)
 
     ep_lengths = [ep.n_steps for ep in batch.episodes]
     ep_durations = [ep.duration_s for ep in batch.episodes]
@@ -261,6 +292,7 @@ def main() -> None:
             "modalities": sorted(batch.modalities),
             "control_mode": args.control_mode,
             "gripper_dims": gripper_dims,
+            "dataset_profile": report.dataset_profile,
             "note": note,
         },
         "episode_structure": {

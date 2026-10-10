@@ -29,7 +29,7 @@ changes load time and memory characteristics.
     referenced in `videos/` into (T, H, W, C) uint8 RGB arrays.
 
 Dependencies:
-  pip install 'calibra[lerobot]'  (datasets, pyarrow, duckdb, pillow, av/opencv-python)
+  pip install 'calibra-robotics[lerobot]'  (datasets, pyarrow, duckdb, pillow, av/opencv-python)
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ def _require_datasets() -> "_hf_datasets":
     except ImportError:
         raise ImportError(
             "The 'datasets' package is required for the LeRobot adapter.\n"
-            "Install it with: pip install 'calibra[lerobot]'"
+            "Install it with: pip install 'calibra-robotics[lerobot]'"
         ) from None
 
 
@@ -72,7 +72,7 @@ def _require_duckdb():
     except ImportError:
         raise ImportError(
             "duckdb is required for fast local LeRobot Parquet scanning.\n"
-            "Install it with: pip install 'calibra[lerobot]'"
+            "Install it with: pip install 'calibra-robotics[lerobot]'"
         ) from None
 
 
@@ -84,7 +84,7 @@ def _require_pillow():
     except ImportError:
         raise ImportError(
             "Pillow is required to decode LeRobot image columns.\n"
-            "Install it with: pip install 'calibra[lerobot]'"
+            "Install it with: pip install 'calibra-robotics[lerobot]'"
         ) from None
 
 
@@ -191,16 +191,17 @@ class LeRobotReader(DatasetReader):
         if _is_hub_id(path):
             hf = _require_datasets()
             ds, dataset_name, task = self._load_hub(hf, bare)
+            task_table = _fetch_hub_tasks_table(bare)
             scalar_cols = self._scalar_columns(hf, ds)
             ds = ds.select_columns(scalar_cols)
             df = ds.to_pandas()
             if self.decode_images:
                 episodes = self._lazy_episodes_from_df(
-                    df, task, path, progress_callback=self.progress_callback
+                    df, task, path, progress_callback=self.progress_callback, task_table=task_table
                 )
             else:
                 episodes = self._episodes_from_df(
-                    df, task, path, progress_callback=self.progress_callback
+                    df, task, path, progress_callback=self.progress_callback, task_table=task_table
                 )
         else:
             p = Path(bare)
@@ -225,7 +226,9 @@ class LeRobotReader(DatasetReader):
                         dataset_name=p.name,
                         format=self.format_name,
                         source_path=path,
-                        _capabilities_hint=frozenset({"actions", "timestamps", "images", "proprio"}),
+                        _capabilities_hint=frozenset(
+                            {"actions", "timestamps", "images", "proprio"}
+                        ),
                     )
                 else:
                     episodes = self._episodes_from_df(
@@ -263,6 +266,7 @@ class LeRobotReader(DatasetReader):
         """
         conn = self._build_duckdb_conn(p)
         task = _read_task_v2(p)
+        task_table = _read_tasks_table_v2v3(p)
 
         df = conn.execute("SELECT * FROM dataset").df()
         conn.close()
@@ -279,7 +283,12 @@ class LeRobotReader(DatasetReader):
 
         if self.decode_images:
             episodes = self._lazy_episodes_from_df(
-                df, task, source, video_resolver=video_resolver, progress_callback=self.progress_callback
+                df,
+                task,
+                source,
+                video_resolver=video_resolver,
+                progress_callback=self.progress_callback,
+                task_table=task_table,
             )
             return EpisodeBatch(
                 episodes=episodes,
@@ -291,7 +300,12 @@ class LeRobotReader(DatasetReader):
             )
 
         episodes = self._episodes_from_df(
-            df, task, source, video_resolver=video_resolver, progress_callback=self.progress_callback
+            df,
+            task,
+            source,
+            video_resolver=video_resolver,
+            progress_callback=self.progress_callback,
+            task_table=task_table,
         )
         return EpisodeBatch(
             episodes=episodes,
@@ -334,13 +348,19 @@ class LeRobotReader(DatasetReader):
         df = df.sort_values(["episode_index", "frame_index"]).reset_index(drop=True)
 
         task = _read_task_v2(p)
+        task_table = _read_tasks_table_v2v3(p)
         video_resolver = None
         if self.decode_images:
             video_resolver = VideoDatasetResolver(p, info)
 
         if self.decode_images:
             episodes = self._lazy_episodes_from_df(
-                df, task, source, video_resolver=video_resolver, progress_callback=self.progress_callback
+                df,
+                task,
+                source,
+                video_resolver=video_resolver,
+                progress_callback=self.progress_callback,
+                task_table=task_table,
             )
             return EpisodeBatch(
                 episodes=episodes,
@@ -352,7 +372,12 @@ class LeRobotReader(DatasetReader):
             )
 
         episodes = self._episodes_from_df(
-            df, task, source, video_resolver=video_resolver, progress_callback=self.progress_callback
+            df,
+            task,
+            source,
+            video_resolver=video_resolver,
+            progress_callback=self.progress_callback,
+            task_table=task_table,
         )
         return EpisodeBatch(
             episodes=episodes,
@@ -385,6 +410,7 @@ class LeRobotReader(DatasetReader):
             )
         conn = self._build_duckdb_conn(p)
         task = _read_task_v2(p)
+        task_table = _read_tasks_table_v2v3(p)
 
         video_resolver = None
         if self.decode_images:
@@ -403,7 +429,9 @@ class LeRobotReader(DatasetReader):
             df = conn.execute(
                 f"SELECT * FROM dataset WHERE episode_index = {ep_id} ORDER BY frame_index"
             ).df()
-            yield self._episode_from_group(df, ep_id, task, path, video_resolver=video_resolver)
+            yield self._episode_from_group(
+                df, ep_id, task, path, video_resolver=video_resolver, task_table=task_table
+            )
 
         conn.close()
 
@@ -492,6 +520,7 @@ class LeRobotReader(DatasetReader):
         source: str,
         video_resolver: Optional[VideoDatasetResolver] = None,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        task_table: Optional[dict[int, str]] = None,
     ):
         """Build a LazyEpisodeList that decodes each episode's video frames on-demand."""
         episode_col = "episode_index"
@@ -520,6 +549,7 @@ class LeRobotReader(DatasetReader):
                 source,
                 video_resolver=video_resolver,
                 fallback_start_frame=cum_offsets[idx],
+                task_table=task_table,
             )
             if progress_callback:
                 progress_callback(idx + 1, total_episodes, f"Episode {ep_id}")
@@ -541,6 +571,7 @@ class LeRobotReader(DatasetReader):
         source: str,
         video_resolver: Optional[VideoDatasetResolver] = None,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        task_table: Optional[dict[int, str]] = None,
     ) -> list[Episode]:
         """Split a full-dataset DataFrame into per-episode Episode objects."""
         episode_col = "episode_index"
@@ -564,6 +595,7 @@ class LeRobotReader(DatasetReader):
                     source,
                     video_resolver=video_resolver,
                     fallback_start_frame=cum_frame_offset,
+                    task_table=task_table,
                 )
             )
             cum_frame_offset += len(group)
@@ -579,6 +611,7 @@ class LeRobotReader(DatasetReader):
         source: str,
         video_resolver: Optional[VideoDatasetResolver] = None,
         fallback_start_frame: int = 0,
+        task_table: Optional[dict[int, str]] = None,
     ) -> Episode:
         if "frame_index" in group.columns:
             group = group.sort_values("frame_index")
@@ -611,7 +644,11 @@ class LeRobotReader(DatasetReader):
                     )
                     if v_path is not None:
                         # Key under normalized obs key names
-                        norm_key = key if any(key.startswith(p) for p in ("camera", "cam", "rgb", "depth")) else f"camera_{key}"
+                        norm_key = (
+                            key
+                            if any(key.startswith(p) for p in ("camera", "cam", "rgb", "depth"))
+                            else f"camera_{key}"
+                        )
                         lazy_videos[norm_key] = (v_path, s_frame, n_frames)
 
         norm_raw = normalize_obs_keys(raw_obs)
@@ -620,10 +657,11 @@ class LeRobotReader(DatasetReader):
         else:
             obs = norm_raw
 
+        resolved_task = _resolve_episode_task(group, task, task_table)
         return Episode(
             metadata=EpisodeMetadata(
                 episode_id=str(ep_id),
-                task_description=task,
+                task_description=resolved_task,
                 source_file=source,
             ),
             timestamps=timestamps,
@@ -794,7 +832,9 @@ def _decode_video_frames(
     elif backend_name == "imageio":
         try:
             if num_frames is not None:
-                imgs = backend.imread(str(video_path), index=slice(start_frame, start_frame + num_frames))
+                imgs = backend.imread(
+                    str(video_path), index=slice(start_frame, start_frame + num_frames)
+                )
             else:
                 imgs = backend.imread(str(video_path))
             return np.asarray(imgs, dtype=np.uint8)
@@ -979,7 +1019,9 @@ class VideoDatasetResolver:
             for k in (f"videos/{c}/from_frame", f"videos.{c}.from_frame", "from_frame"):
                 if k in meta and meta[k] is not None:
                     start_f = int(meta[k])
-                    to_f = int(meta.get(k.replace("from_frame", "to_frame"), start_f + (ep_len or 0)))
+                    to_f = int(
+                        meta.get(k.replace("from_frame", "to_frame"), start_f + (ep_len or 0))
+                    )
                     return start_f, max(0, to_f - start_f)
 
             for k in (
@@ -1050,4 +1092,105 @@ def _read_task_v2(p: Path) -> Optional[str]:
             first = f.readline()
             if first:
                 return json.loads(first).get("task")
+    return None
+
+
+def _resolve_episode_task(
+    group: "_pd.DataFrame",
+    fallback_task: Optional[str],
+    task_table: Optional[dict[int, str]],
+) -> Optional[str]:
+    """
+    Per-episode task text, preferring a task_index lookup over a single
+    dataset-wide fallback string.
+
+    Multi-task LeRobot v2/v3 datasets carry a `task_index` column per frame
+    plus a separate task table (`meta/tasks.parquet` in v3, `meta/tasks.jsonl`
+    in v2) mapping index -> text. `fallback_task` (a single dataset-wide
+    string, or None) is used when no table entry is available, matching the
+    single-task behavior for datasets without a task table.
+    """
+    if task_table and "task_index" in group.columns:
+        raw = group["task_index"].iloc[0]
+        if raw is not None and not (isinstance(raw, float) and np.isnan(raw)):
+            resolved = task_table.get(int(raw))
+            if resolved is not None:
+                return resolved
+    return fallback_task
+
+
+def _parse_tasks_parquet(path: Path) -> Optional[dict[int, str]]:
+    """
+    Parse a LeRobot v3 `meta/tasks.parquet` task table into {task_index: text}.
+
+    LeRobotDatasetMetadata builds this as a DataFrame indexed by task text
+    with a `task_index` column (`pd.DataFrame({"task_index": ...}, index=tasks)`).
+    Also accept a plain `task_index`/`task` two-column layout defensively, in
+    case of schema drift.
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        return None
+    try:
+        df = pd.read_parquet(path)
+    except Exception:
+        return None
+    if "task_index" not in df.columns:
+        return None
+    if "task" in df.columns:
+        return {int(ti): str(t) for ti, t in zip(df["task_index"], df["task"])}
+    return {int(ti): str(t) for t, ti in zip(df.index, df["task_index"])}
+
+
+def _parse_tasks_jsonl(path: Path) -> Optional[dict[int, str]]:
+    """Parse a LeRobot v2 `meta/tasks.jsonl` task table into {task_index: text}."""
+    table: dict[int, str] = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            if "task_index" in obj and "task" in obj:
+                table[int(obj["task_index"])] = obj["task"]
+    return table or None
+
+
+def _read_tasks_table_v2v3(p: Path) -> Optional[dict[int, str]]:
+    """Build the {task_index: text} table from a local v2/v3 dataset's meta/ dir."""
+    parquet_path = p / "meta" / "tasks.parquet"
+    if parquet_path.exists():
+        table = _parse_tasks_parquet(parquet_path)
+        if table:
+            return table
+    jsonl_path = p / "meta" / "tasks.jsonl"
+    if jsonl_path.exists():
+        return _parse_tasks_jsonl(jsonl_path)
+    return None
+
+
+def _fetch_hub_tasks_table(repo_id: str) -> Optional[dict[int, str]]:
+    """
+    Best-effort fetch of a Hub dataset's task table (v3 tasks.parquet, v2
+    tasks.jsonl), so `LeRobotReader.read()` on a Hub ID (e.g. "lerobot/libero_10")
+    gets the same per-episode task_description as the local v2/v3 path instead
+    of always None. Returns None (never raises) if huggingface_hub is missing
+    or the repo has no task table (e.g. single-task v1 datasets).
+    """
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        return None
+    for filename, parser in (
+        ("meta/tasks.parquet", _parse_tasks_parquet),
+        ("meta/tasks.jsonl", _parse_tasks_jsonl),
+    ):
+        try:
+            local_path = hf_hub_download(repo_id=repo_id, filename=filename, repo_type="dataset")
+        except Exception:
+            continue
+        table = parser(Path(local_path))
+        if table:
+            return table
     return None

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from calibra.assessment import EpisodeAssessment
 from calibra.experiment_log import ExperimentLog, ExperimentRecord
 
 
@@ -175,3 +176,229 @@ def test_record_to_dict_round_trip():
     )
     restored = ExperimentRecord.from_dict(rec.to_dict())
     assert restored.to_dict() == rec.to_dict()
+
+
+def test_metrics_source_round_trips(tmp_path):
+    log = _log(tmp_path)
+    log.record(
+        experiment_id="e1",
+        condition="calibra",
+        retention_pct=25.0,
+        metrics_source="wandb:/runs/latest/wandb-summary.json",
+    )
+    reloaded = ExperimentLog(path=log.path).list_records()[0]
+    assert reloaded.metrics_source == "wandb:/runs/latest/wandb-summary.json"
+
+
+def test_metrics_source_defaults_empty_for_old_rows(tmp_path):
+    path = tmp_path / "experiments.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # a row written before the metrics_source slot existed
+    path.write_text(
+        json.dumps(
+            {
+                "record_id": "x",
+                "timestamp": 1.0,
+                "experiment_id": "e1",
+                "condition": "full",
+                "retention_pct": 100.0,
+            }
+        )
+        + "\n"
+    )
+    assert ExperimentLog(path=path).list_records()[0].metrics_source == ""
+
+
+# ── metadata-conditioning benchmark fields (arm / metadata_conditioning /
+#    actual_retention_pct) ──────────────────────────────────────────────────
+
+
+def test_metadata_conditioning_fields_round_trip(tmp_path):
+    log = _log(tmp_path)
+    log.record(
+        experiment_id="mc",
+        condition="calibra",
+        retention_pct=25.0,
+        actual_retention_pct=41.0,
+        arm="D",
+        metadata_conditioning=True,
+        n_episodes=85,
+    )
+    r = ExperimentLog(path=log.path).list_records()[0]
+    assert r.arm == "D"
+    assert r.metadata_conditioning is True
+    assert r.retention_pct == 25.0  # nominal prune target
+    assert r.actual_retention_pct == 41.0  # what was actually trained on
+
+
+def test_metadata_conditioning_defaults_for_old_rows(tmp_path):
+    path = tmp_path / "experiments.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "record_id": "x",
+                "timestamp": 1.0,
+                "experiment_id": "e1",
+                "condition": "full",
+                "retention_pct": 100.0,
+            }
+        )
+        + "\n"
+    )
+    r = ExperimentLog(path=path).list_records()[0]
+    assert r.arm == ""
+    assert r.metadata_conditioning is False
+    assert r.actual_retention_pct is None
+
+
+def test_record_rejects_out_of_range_actual_retention(tmp_path):
+    log = _log(tmp_path)
+    with pytest.raises(ValueError):
+        log.record(
+            experiment_id="e1", condition="calibra", retention_pct=25.0, actual_retention_pct=150.0
+        )
+
+
+# ── dataset-characteristics rollup (mean_* fields) ──────────────────────────
+
+
+def test_record_rejects_out_of_range_mean_anomaly_score(tmp_path):
+    log = _log(tmp_path)
+    with pytest.raises(ValueError):
+        log.record(
+            experiment_id="e1", condition="calibra", retention_pct=25.0, mean_anomaly_score=1.5
+        )
+
+
+def test_record_accepts_explicit_mean_fields(tmp_path):
+    log = _log(tmp_path)
+    rec = log.record(
+        experiment_id="e1",
+        condition="calibra",
+        retention_pct=25.0,
+        mean_anomaly_score=0.3,
+        mean_quality_risk=0.2,
+        mean_coverage_value=0.6,
+    )
+    assert rec.mean_anomaly_score == 0.3
+    assert rec.mean_quality_risk == 0.2
+    assert rec.mean_coverage_value == 0.6
+
+
+def test_record_derives_mean_fields_from_assessments(tmp_path):
+    log = _log(tmp_path)
+    assessments = [
+        EpisodeAssessment(episode_id="a", anomaly_score=0.2, quality_risk=0.4, coverage_value=0.8),
+        EpisodeAssessment(episode_id="b", anomaly_score=0.6, quality_risk=0.8, coverage_value=0.2),
+    ]
+    rec = log.record(
+        experiment_id="e1", condition="calibra", retention_pct=25.0, assessments=assessments
+    )
+    assert rec.mean_anomaly_score == pytest.approx(0.4)
+    assert rec.mean_quality_risk == pytest.approx(0.6)
+    assert rec.mean_coverage_value == pytest.approx(0.5)
+
+
+def test_record_rejects_both_assessments_and_explicit_mean_field(tmp_path):
+    log = _log(tmp_path)
+    assessments = [EpisodeAssessment(episode_id="a", anomaly_score=0.2, quality_risk=0.4)]
+    with pytest.raises(ValueError):
+        log.record(
+            experiment_id="e1",
+            condition="calibra",
+            retention_pct=25.0,
+            assessments=assessments,
+            mean_anomaly_score=0.5,
+        )
+
+
+# ── matrix coverage ──────────────────────────────────────────────────────────
+
+
+def test_matrix_coverage_empty_log(tmp_path):
+    log = _log(tmp_path)
+    assert log.matrix_coverage() == {}
+
+
+def test_matrix_coverage_groups_by_embodiment_task_policy(tmp_path):
+    log = _log(tmp_path)
+    log.record(
+        experiment_id="e1",
+        condition="full",
+        retention_pct=100.0,
+        embodiment="so-100",
+        task="pick",
+        policy_family="act",
+    )
+    log.record(
+        experiment_id="e2",
+        condition="full",
+        retention_pct=100.0,
+        embodiment="franka",
+        task="insertion",
+        policy_family="diffusion",
+    )
+    coverage = log.matrix_coverage()
+    assert set(coverage.keys()) == {
+        ("so-100", "pick", "act"),
+        ("franka", "insertion", "diffusion"),
+    }
+
+
+def test_matrix_coverage_merges_experiments_sharing_a_cell(tmp_path):
+    log = _log(tmp_path)
+    log.record(
+        experiment_id="e1",
+        condition="full",
+        retention_pct=100.0,
+        embodiment="so-100",
+        task="pick",
+        policy_family="act",
+    )
+    log.record(
+        experiment_id="e2",
+        condition="random",
+        retention_pct=25.0,
+        embodiment="so-100",
+        task="pick",
+        policy_family="act",
+    )
+    coverage = log.matrix_coverage()
+    cell = coverage[("so-100", "pick", "act")]
+    assert cell["experiment_ids"] == ["e1", "e2"]
+    assert cell["n_records"] == 2
+
+
+def test_matrix_coverage_complete_when_protocol_satisfied(tmp_path):
+    log = _log(tmp_path)
+    kwargs = dict(embodiment="so-100", task="pick", policy_family="act")
+    log.record(experiment_id="e1", condition="full", retention_pct=100.0, **kwargs)
+    for level in (10.0, 25.0, 50.0, 75.0):
+        log.record(experiment_id="e1", condition="random", retention_pct=level, **kwargs)
+        log.record(experiment_id="e1", condition="calibra", retention_pct=level, **kwargs)
+    cell = log.matrix_coverage()[("so-100", "pick", "act")]
+    assert cell["complete"] is True
+    assert cell["missing"] == []
+
+
+def test_coverage_report_empty_log(tmp_path):
+    log = _log(tmp_path)
+    assert "empty" in log.coverage_report().lower()
+
+
+def test_coverage_report_lists_cells_and_status(tmp_path):
+    log = _log(tmp_path)
+    log.record(
+        experiment_id="e1",
+        condition="full",
+        retention_pct=100.0,
+        embodiment="so-100",
+        task="pick",
+        policy_family="act",
+    )
+    text = log.coverage_report()
+    assert "so-100" in text
+    assert "pick" in text
+    assert "act" in text
+    assert "missing" in text.lower()

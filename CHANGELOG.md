@@ -7,6 +7,348 @@ All notable changes to Calibra are documented here.
 ### Added
 
 - **LeRobot v2/v3 video decoding support** (`--decode-images`) — `LeRobotReader(decode_images=True)` and `calibra integrity --decode-images` now support LeRobot v2 (per-episode `.mp4` video files) and v3 (chunk-concatenated video files with `episodes.jsonl` slice offsets). Unlocks visual integrity diagnostics (`duplicate_frame_rate`, `camera_freeze_events`, `blurry_episode_fraction`) for modern LeRobot video datasets. Supports PyAV (`av`) and OpenCV (`cv2`) backends.
+- **Video-framerate regression coverage.** The profiled and global PushT snapshots now include `video_framerate/video_fps_mismatch: INFO` when the action-only fixture has no video files. Previously this informational flag was absent from both snapshots. Existing detector levels, headline metrics, noise regimes and prune selections are unchanged.
+
+### Changed
+
+- **Calibra Cloud code moved out of the core into `ee/`** (ADR-012), ahead of
+  relicensing the core under Apache 2.0. `calibra/cloud/` is now
+  `ee/calibra_ee/cloud/` and `server/` is now `ee/server/`; neither is
+  published to PyPI. The core finds them through a new `calibra.plugins` entry
+  point (`calibra/plugins.py`).
+  - `calibra login`, `logout`, `whoami` and `cloud` are available only with
+    the extension installed (`pip install -e ee/`). Without it they exit 2
+    with an explanation.
+  - **The core no longer contacts Calibra Cloud on its own.** Recording an
+    outcome stays local (`~/.calibra/outcomes.jsonl`); the anonymous outcome
+    sync, the community percentiles printed after
+    `calibra predict --record-outcome`, and badge registration after
+    `calibra card --push` now run only with the extension. Dataset cards use
+    the static shields.io badge unless the extension provides a live one.
+    `calibra compare --community` and `calibra calibrate --global` still reach
+    the service, because the user asks for them explicitly.
+  - `predict_outcome()` accepts an `outcome_source` for empirical blending;
+    the local outcome store remains the default.
+- **Outside contributions are closed for now:** issues and discussions are
+  turned off, and a workflow closes external pull requests automatically with
+  a pointer to the contact email. A draft Contributor License Agreement
+  (`CLA.md`) is kept for when contributions open. `GOVERNANCE.md` describes
+  who decides what.
+- **CI now also runs on Python 3.13, fails if the mypy error count rises**
+  above its baseline (`scripts/mypy_ratchet.py`), and **fails if test coverage
+  drops below 58%** (measured with only the dev extra installed, as in CI).
+- Added `pre-commit` hooks and `CITATION.cff`. `SECURITY.md` now points to
+  private vulnerability reporting, and `SECURITY.md` and `CODE_OF_CONDUCT.md`
+  name a contact.
+
+### Fixed
+
+- **The certify GitHub Actions never failed a job.** In
+  `.github/actions/certify` and the reusable `.github/workflows/certify.yml`,
+  `$(calibra certify ...) || true` followed by `EXIT_CODE=$?` always read 0, so
+  NOT CERTIFIED datasets passed and `strict` had no effect. Both now fail on
+  NOT CERTIFIED, and on warnings when `strict` is on.
+- **The reusable certify workflow could not see local datasets:** it never
+  checked out the caller's repository. It now does.
+- **The root `action.yml` interpolated the report into its PR-comment script,**
+  so report text containing a backtick or `${` broke the script or ran as
+  JavaScript. All three certify entry points now pass inputs and outputs
+  through environment variables. Its `score` output was always empty (it read
+  a key `certify --json` does not emit) and now comes from `calibra score`.
+  The comment is truncated to fit GitHub's size limit, and a comment that
+  cannot be posted no longer fails the job.
+- **`calibra compare <dataset> pusht`** judged velocity discontinuities with the
+  position-command thresholds calibrated on arm datasets once the PushT
+  reference was correctly labelled `position`, so PushT-like data (~17%) read
+  as "significantly rougher than pusht". References produced under a dataset
+  profile are now interpreted against their own clean baseline, and only
+  class-agnostic claims are shown next to them.
+- **Claim confidence now follows the SPEC scale** (`calibra/claims/SPEC.md`):
+  2–4 supporting datasets is MODERATE. The code had labelled 2 as LOW (below
+  1's LOW-MODERATE) and 3–4 as an undocumented MEDIUM. JS-003, PAI-001 and
+  TEMP-003 (2 supporting datasets each) move LOW → MODERATE.
+- **aloha_mobile_cabinet numbers in `calibra/references/README.md`** quoted
+  the first reference run (2026-06-15, 5387172), which excluded only dim 13 and
+  scored the left gripper as motion. They now match the committed reference
+  (both grippers excluded), which reproduces on current code: LDLJ −24.08 →
+  −24.70, spikes 1.0% → 0.42%, velocity discontinuities 1.3% → 0.84%, jitter
+  3.1e-5 → 3.0e-5, contact 78.9% → 78.8%. The 8 / 85 outliers reproduce
+  exactly (same episodes) and are unchanged.
+- **An explicit `--gripper-dims` now survives a dataset profile.** Profiles
+  replaced any `gripper_dims` equal to the default `[-1]`, so asking for `-1`
+  explicitly on a profiled Hub ID (e.g. `lerobot/pusht`) was silently
+  overridden. Analyzers now default to a marked `DefaultGripperDims([-1])`,
+  which behaves identically but is the only value a profile replaces.
+  `compare`, `corrupt` and `scripts/profile_dataset.py` share one
+  `parse_gripper_dims` helper. No default behavior changes (the benchmark
+  regression gate is unchanged).
+
+### Added
+
+- **Evidence-gated dataset profiles.** Every profile now carries a
+  `ProfileEvidence` record (dataset revision, sampling rate, action space,
+  reference run, clean baseline, justification, reproduction command). Tests
+  fail if it is incomplete, if the baseline disagrees with the cited reference
+  file, or if a profile's prune limits would cut its own clean episodes.
+- **Benchmark regression gate** (`tests/regression/`, its own CI step). Runs
+  analyze and prune on a frozen copy of `lerobot/pusht` (revision `7628202a`,
+  259 KB fixture) and fails when any flag level, regime, headline metric or
+  kept/dropped episode changes. Intended changes regenerate the golden file
+  with `CALIBRA_UPDATE_GOLDEN=1 pytest tests/regression`.
+- **Evidence rules for GitHub Copilot code review**
+  (`.github/copilot-instructions.md`, plus path-specific rules in
+  `.github/instructions/` for claims and for references, golden results and
+  profiles). Copilot's advisory review flags PRs that change golden results,
+  thresholds, profiles, claims or reference data without evidence. It needs no
+  repository secret, unlike the Claude Code workflow it replaces.
+- `.github/CODEOWNERS` for verdict-affecting code, a dataset profile proposal
+  issue form, and contribution docs describing the evidence standard.
+
+### Changed
+
+- **Refreshed the PushT reference** (`calibra/references/pusht_velocity_command.json`).
+  It predated the float64 differentiation fix in the smoothness analyzer, so its
+  means were stale: spike rate 4.939% → 4.946%, velocity discontinuity rate
+  16.718% → 16.696%. p95 and max, which the profile thresholds rest on, are
+  unchanged, so no verdict moves. The stale `control_mode: velocity` label is
+  dropped (PushT actions are position targets).
+- **Regenerated the `pusht_image` reference.** The old file reproduces exactly
+  on its original code (8762669), which scored only the x axis (the y target
+  was excluded as a "gripper"), differentiated in float32, and labelled the
+  data `velocity` without using that label. `lerobot/pusht_image` has the same
+  actions as `lerobot/pusht`; profiled correctly (position, both axes) its
+  smoothness distributions match PushT exactly (spike 7.76% → 4.95%, velocity
+  discontinuities 11.11% → 16.70%, LDLJ −16.01 → −16.34).
+- **Reference metadata is now authoritative.** `scripts/profile_pusht.py`
+  records `control_mode`, `gripper_dims` and `dataset_profile`, and
+  `scripts/profile_dataset.py` records the gripper dims actually applied (a
+  dataset profile can replace an explicit `--gripper-dims` equal to the
+  default). The paper table's Ctrl column for both PushT rows now reads
+  `position` from that metadata.
+- PushT episode outliers in `calibra/references/README.md`: 27 / 206 → 16 / 206.
+  27 reproduces only on June 2026 code (x axis only, float32).
+- **Claims registry corrected.** PushT is position control, so it was never
+  evidence for the velocity-class claims JS-002, JS-004, VD-002 and VD-003, and
+  `pusht_image` (the same data) was never a second dataset. Those entries, and
+  two BridgeData-vs-PushT comparisons that assumed both were velocity control
+  (JS-003, LDLJ-002), move to a new `retracted_evidence` list with a date and
+  reason. Confidence: JS-004 and VD-003 MEDIUM → LOW-MODERATE, LDLJ-002
+  STRONG → HIGH; no status changes. LDLJ-001 and ENT-001 keep their PushT
+  evidence with dated corrections to its reasoning. Three stale values
+  (ENT-001 for two ALOHA datasets, VD-001 for aloha_mobile_cabinet) now match
+  their references and still support their claims.
+- **Claim values are checked against references**
+  (`tests/test_claims_references.py`): every numeric evidence entry must match
+  its dataset's reference file. `docs/claims.md` shows retracted evidence.
+- The report's cross-dataset table lists pusht and pusht_image as one row.
+
+## [0.11.0] - Dataset profiles and README fixes
+
+Every command in the README was re-run end to end; this release fixes what did
+not work as documented. Highlights: the Isaac Lab → GR00T integration and
+`--export-dataset` produce usable output again (the exported PushT coreset loads
+and trains in LeRobot 0.4.4), `calibra serve` POST endpoints work again, and
+dataset profiles let PushT be analysed correctly without changing any global
+default.
+
+### Added
+
+- **Dataset profiles** (`calibra/dataset_profiles.py`). Smoothness and
+  calibration-drift checks exclude the last action dimension as a gripper by
+  default, which silently dropped PushT's `y` axis (its 2-D action is an
+  `(x, y)` target with no gripper). The global default is unchanged; instead the
+  `pusht` profile sets `gripper_dims=[]` and applies automatically to
+  `lerobot/pusht` and `lerobot/pusht_image`. Local copies take
+  `--profile pusht` (on `integrity`, `audit`, `review`, `prune`, `analyze`,
+  `score`; `Pipeline(profile=...)` in Python). Profiles only replace analyzer
+  defaults, never explicit settings. The applied profile is recorded in the new
+  `DiagnosticReport.dataset_profile` field and included in `config_hash` and the
+  cache key. With the profile, PushT's smoothness metrics match the hand-measured
+  reference profile in `calibra/references/README.md` (LDLJ −16.34, jerk spikes
+  4.9%, velocity discontinuities 16.7%).
+- **PushT calibration baselines re-measured** with the profile
+  (`experiments/benign_firing_rate_benchmark.py`, 2026-09-23): `spike_rate`
+  5.8% (was 1.5%), `vel_disc_rate` 1.9% (was 3.9%), `jitter_cv` 0.0% (was 6.8%,
+  stale since the 1% jitter floor). ALOHA was re-measured too and is unchanged.
+  `calibra audit lerobot/pusht` now sits exactly at its baseline.
+- **Profile regime thresholds.** Scoring PushT's `y` axis raises its velocity
+  discontinuity rate to 16.7%, above the global 13% HIGH NOISE cutoff, which
+  made `analyze` recommend 81/206 episodes and drop 125 as "corrupted". That rate
+  is PushT's clean baseline under 10 Hz mouse teleop, not corruption, so the
+  `pusht` profile sets `disc_high=0.25` (about 1.5× the clean rate) via the new
+  `DatasetProfile.regime_thresholds`. `diagnose_regime` applies a report's
+  profile thresholds automatically (explicit `custom_thresholds` still win), and
+  the noise score uses the same thresholds. The global thresholds are unchanged.
+  PushT stays MODERATE NOISE with 175/206 episodes recommended.
+- **Profile `prune` limits** (`DatasetProfile.prune_thresholds`). `prune`'s
+  global Stage 1 limits (spike 0.10, velocity discontinuities 0.25) sit at
+  PushT's own clean p95 (10.4%, 27.5%), so they removed clean PushT episodes.
+  The `pusht` profile uses the limits `analyze` already applies to PushT (0.25,
+  0.40), which clear its clean maximum (16.1%, 37.5%): PushT now loses 0
+  episodes in Stage 1 (48 without the profile, the global limits being
+  unchanged). Explicit `--max-spike-rate` / `--max-vel-disc-rate` still win;
+  `--max-vel-disc-rate` now defaults to unset (resolved to 0.25) so `prune` can
+  tell. The profile also reaches `Pi0CompatibilityAnalyzer`'s internal
+  smoothness check (new `gripper_dims` field) and every `calibra serve`
+  endpoint (new optional `profile` request field for local paths).
+
+### Fixed
+
+- **Every `calibra serve` POST endpoint returned 422.** `serve.py` used
+  `from __future__ import annotations` while defining its request models inside
+  `_make_app()`, so FastAPI could not resolve `req: AnalyzeRequest` and expected
+  a `req` query parameter instead of a JSON body. The import is removed; a test
+  now checks every POST endpoint reads a JSON body. `serve` outlier detection
+  also gets the dataset ID for calibration baselines, as `audit` does.
+- **PushT was documented as velocity commands.** Its actions are absolute (x, y)
+  target positions (they correlate 0.99 with the next position, 0.10 with the
+  position change). `calibra/references/README.md` and
+  `scripts/profile_pusht.py` are corrected; the reference metrics were already
+  computed correctly in position mode.
+- **Isaac Lab → GR00T integration crashed on every Isaac Lab file.** The reader
+  emits episode IDs like `demo_21`, but `export_gr00t_manifest`,
+  `recommended_demo_indices`, `rejected_demo_indices`, and `filter_hdf5` parsed
+  them with `int()`. They now accept both `demo_N` and `N`. `filter_hdf5` also
+  keeps the `data` group attributes (robomimic `env_args`), updates `total`, and
+  rewrites `mask/train` / `mask/valid` for the new demo numbering.
+- **`calibra prune --export-dataset` produced unloadable LeRobot datasets.** It
+  wrote one `train-00000-of-00001.parquet` regardless of the source layout, and
+  dropped videos and the episode index. It now follows `info.json`: LeRobot v3
+  gets `data/…/file-000.parquet`, a rewritten `meta/episodes/*.parquet`, the
+  referenced video files, and `tasks.parquet`. LeRobot v2 gets per-episode
+  Parquet and mp4 files. `splits` is an episode range. Verified by loading the
+  exported PushT coreset with `LeRobotDataset` (lerobot 0.4.4) and training on it.
+- **HDF5 `--export-dataset` silently exported every demo** for robomimic /
+  Isaac Lab files, because demos live under `data/demo_N`. Only the kept demos
+  are now copied, with `total` and `mask/` updated.
+- **`calibra audit` never showed calibration baselines.** The "Clean baseline"
+  column always read "unavailable" because the dataset ID was not passed through.
+  Hub datasets with a built-in baseline (e.g. `lerobot/pusht`) now show it.
+- **`calibra prune` (default world-model strategy) was non-deterministic.** JEPA
+  weights and minibatch order were unseeded, so the same input could keep
+  different episodes. `RobotJEPAConfig.seed` (default 0) now fixes both, without
+  touching global RNG state.
+- **Duplicate-frame and camera-freeze checks blocked clean datasets.** A
+  transition counted as a repeat when the *mean* pixel difference was below 0.5,
+  which is also true when a small object moves in a low-resolution frame:
+  `lerobot/pusht_image` got BLOCK on 206/206 episodes although no two consecutive
+  frames are identical. A repeat is now a transition where fewer than 0.05% of
+  pixels changed by more than 2 levels, which separates re-emitted frames from
+  both small motion and live sensor noise. `activity_threshold` is replaced by
+  `pixel_tolerance` and `min_changed_fraction` on both analyzers.
+- **Smoothness metrics depended on the action dtype.** Jerk, velocity
+  discontinuity, and LDLJ were differentiated in whatever dtype the reader
+  returned. With quantised actions (PushT's integer pixel targets), float32
+  rounding broke exact ties at the `k × median` spike boundary, so the same data
+  read by different loaders gave different results (PushT `spike_rate` outliers:
+  7 vs 3), and audit disagreed with its own calibration baseline. Derivatives are
+  now always computed in float64. With default analyzer settings (no dataset
+  profile), `prune` on PushT now removes 48 (was 51) quality failures.
+- **Install hints named the wrong PyPI package** (`calibra[...]`, an unrelated
+  project). They now say `calibra-robotics[...]`.
+
+## [0.10.1] — CLI fixes
+
+### Fixed
+
+- **`calibra audit` subcommand** — the command was documented in the README
+  and the Commands table but had no dispatcher in the CLI, so running
+  `calibra audit <path>` silently fell through to the wrong argument parser.
+  `calibra/audit.py` now implements `run_audit()` with the full option set
+  (`--html-out`, `--json`, `--policy`, `--format`, `--strict`,
+  `--no-anomalies`, `--cache-dir`).
+- **`calibra benchmark --help` crash** — a `%` character in the
+  `--base-gpu-hours` help string (`"full (100%) dataset"`) caused a
+  `ValueError: unsupported format character` in argparse on Python 3.14.
+  Escaped to `100%%`.
+
+## [0.10.0] — Calibrated detection
+
+Addresses the core HF feedback question: "Is this anomaly actually corruption, or
+just unusual data?" Three interlocking additions answer it. First, a
+`CalibrationRegistry` ships empirically-measured benign firing rates — on known-clean
+LeRobot datasets (PushT n=206, ALOHA n=50) the detectors fire at a known base rate,
+so any observed rate can be compared to a baseline rather than treated as absolute.
+Second, `AnomalySummary` (new in schema 1.2.0) surfaces that context — per-detector
+flag counts, benign baseline rate, detection rate, and concentration score — directly
+in the public JSON report. Third, `calibra.schema.evidence` (ADR-012) introduces the
+`FindingCharacterization` vocabulary (`TRUE_CORRUPTION` / `UNUSUAL_VALID` /
+`AMBIGUOUS`) for human-reviewed findings, letting teams build a labeled dataset that
+quantifies per-detector precision. Architecture rule enforced throughout: detected
+anomaly ≠ confirmed corruption ≠ DROP decision.
+
+### Added
+
+- **`CalibrationRegistry` / `CalibrationProfile`** (`calibra/calibration.py`) —
+  in-memory registry of empirically-measured benign firing rates. Each profile is
+  keyed by detector, dataset, task family, and detector version so a PushT baseline
+  is never silently applied to ALOHA. `lookup()` returns `None` when no baseline
+  exists — callers must not substitute a generic number. `benign_firing_rate()` and
+  `calibration_context()` provide one-line display strings (e.g. "7.8% flag rate
+  (clean baseline 3.2% from lerobot/pusht — 2.4× above)"). Profiles can be
+  serialized (`save_json` / `load_json`) and merged so user-measured baselines
+  override the built-ins. `DEFAULT_REGISTRY` ships 10 benchmark-measured profiles
+  across PushT (n=206) and ALOHA (n=50) for five detectors
+  (`jitter_cv`, `dropout_rate`, `spike_rate`, `vel_disc_rate`, `ldlj`). Provenance
+  tag `"builtin_estimate"` vs `"benchmark_run"` is always shown so users know the
+  quality of the baseline.
+- **`AnomalySummary` / `DetectorCalibrationSummary`** (schema 1.2.0,
+  `calibra/schema/public_report.py`) — new top-level field on `CalibraReport`
+  (null when produced without anomaly detection). `AnomalySummary` carries
+  `total_flags`, `affected_episodes`, `affected_episode_rate`, `n_total_episodes`,
+  and a `detectors` list. Each `DetectorCalibrationSummary` pairs the observed
+  `fraction_flagged` against `benign_firing_rate` from the registry, plus
+  `corrupted_episode_detection_rate` from the benchmark and a `concentration` tag
+  (`"spread"` / `"clustered"` / `"endpoint"` / `"unknown"`). The architecture note
+  is encoded in the docstring: anomaly ≠ corruption ≠ DROP.
+- **`Finding.benign_baseline_rate` / `Finding.baseline_source`** — two new nullable
+  fields on `Finding` (schema 1.2.0) attach the calibration context per-finding so
+  consumers that only read individual findings still get the baseline.
+- **Human-reviewed evidence schema (ADR-012)** (`calibra/schema/evidence.py`) —
+  `FindingCharacterization` enum (`TRUE_CORRUPTION` / `UNUSUAL_VALID` / `AMBIGUOUS`),
+  `ReviewedFinding` (dataset, episode, detector, characterization, reviewer note,
+  raw signal context), and `ReviewedFindingDataset` (JSONL-backed collection with
+  `precision_table()`, `to_markdown()`, `summary()` for per-detector corruption vs.
+  unusual-valid breakdowns).
+- **Benign firing rate benchmark** (`experiments/benign_firing_rate_benchmark.py`) —
+  full HuggingFace-backed script that downloads LeRobot datasets, runs every detector
+  on every episode, computes Wilson-score 95% CIs, and writes
+  `experiments/results/benign_firing_rates.{csv,json,md}`. Results for PushT and ALOHA
+  sim are included. The benchmark also measures corrupted-episode detection rate
+  against synthetically injected defects.
+
+### Changed
+
+- `CalibraReport.schema_version` bumped to `"1.2.0"`. Reports from earlier versions
+  are structurally forward-compatible — new nullable fields default to null.
+
+## [0.9.0] — Dataset decision layer & annotate mode
+
+ADR-011: `calibra prune` no longer only removes episodes. It can now emit a
+per-episode **decision layer** — every episode gets a disposition
+(`KEEP` / `DROP` / `ANNOTATE` / …) and a characterization (`quality_risk`,
+`coverage_value`, `anomaly_score`, `calibra_score`, `redundancy`, …) — and
+**annotate mode** writes that as a training-ready, model-agnostic sidecar so a
+metadata-conditioned policy can use data that aggressive pruning would drop.
+The existing `calibra prune` coreset workflow is unchanged. See
+`docs/adr/adr-011-dataset-decision-layer.md` and `docs/annotate.md`; the
+research gate (does the metadata actually improve training?) is
+`experiments/METADATA_CONDITIONING_BENCHMARK.md`.
+
+### Added
+
+- **Dataset decision layer (ADR-011), schema groundwork.** `CurationReport` now carries a `dispositions` list — one `EpisodeCharacterization` per episode holding its decision (new `Disposition` enum: `KEEP` / `DROP` / `DOWNWEIGHT` / `ANNOTATE` / `REVIEW` / `RECOLLECT`) plus the signals behind it (`n_steps`, `quality_risk`, `coverage_value`, `anomaly_score`, `integrity_flags`, `reasons`, …). The legacy `retained_indices` / `dropped_indices` are unchanged and now derived from `dispositions` (KEEP / DOWNWEIGHT / ANNOTATE → retained) when only one side is supplied, so existing callers keep working. `EpisodeCurator.curate()` populates `dispositions` (threshold pass → `KEEP`, threshold failure → `DROP`). New `CurationReport.by_disposition()` / `disposition_counts()`.
+- **`calibra prune --annotate DIR`** — annotate mode (ADR-011): instead of only removing episodes, write a training-ready sidecar that keeps every episode with a decision and characterization attached. `calibra_annotations.jsonl` has one row per episode — `calibra_disposition` (`KEEP` / `DROP` / `ANNOTATE`) plus `calibra_score`, `quality_risk`, `coverage_value`, `anomaly_score`, `redundancy`, `success`, `n_steps`, `integrity_flags`, `weight` — alongside `calibra_annotations.manifest.json` (versioned schema + a field dictionary, so the sidecar is self-describing) and the raw `calibra_curation_report.json`. Redundant episodes (ones vanilla pruning would drop) are marked `ANNOTATE`: keep them if your trainer conditions on the metadata. `--annotate-format {jsonl,parquet,both}` (default `jsonl`) additionally writes `calibra_annotations.parquet` (columnar, explicit typed schema; needs pyarrow). The schema is model-agnostic; ACT / Diffusion / VLA conditioning recipes live in `docs/annotate.md`. New: `calibra.schema.annotations` (`AnnotationManifest`, `EpisodeAnnotation`), `calibra.annotate.write_annotations()`.
+- **Decision-layer characterization** — `EpisodeCharacterization` (on `CurationReport.dispositions`) now carries `calibra_score` (`100·(1 − quality_risk)`), `quality_risk`, `anomaly_score`, `coverage_value`, `redundancy` (`1 − coverage_value`) and `success`, not just the triggering threshold. New helpers `calibra.assessment.episode_calibra_score()` / `episode_redundancy()`. `calibra.pruning.pruning_result_to_curation_report(result, batch, *, report=None, redundant_disposition=DROP)` maps a prune run to the decision-layer schema — pass the `DiagnosticReport` to fill the assessment axes, and `DOWNWEIGHT` / `ANNOTATE` to retain redundant episodes instead of dropping them — and is also reachable as `PruningResult.to_curation_report(batch, ...)`, so `CoresetSelector` and `EpisodeCurator` expose the same `CurationReport` view. `EpisodeCurator.curate()` populates the same enriched characterization.
+- **`calibra experiment record --from-metrics PATH`** — reads GPU-hours / wall-clock / eval success / loss / energy straight out of a finished run's metrics file (flat JSON, or a Weights & Biases `wandb-summary.json` from an offline run) instead of retyping them. Point it at a file or a run directory. A built-in alias table matches common key names; `--map FIELD=path.to.key` (repeatable) handles anything unusual. An explicit flag always overrides the file. `gpu_hours` is only taken when literally present — never derived from wall-clock — so a derived figure can't be mistaken for a measured one by the benchmark classifier. The provenance string is stored on the record as `metrics_source`. New module `calibra/metrics_ingest.py`. No network access.
+- **`calibra experiment record --from-review PATH`** — folds a `calibra review --json` file's per-episode assessments into the record's `mean_anomaly_score` / `mean_quality_risk` / `mean_coverage_value`, capturing the dataset side and the training-outcome side of an experiment in one command. Rejects a partial review queue rather than logging a biased dataset-level mean.
+- **`calibra experiment record --dry-run`** — parse `--from-metrics` / `--from-review` and print what would be recorded, writing nothing.
+- **`calibra experiment record` — metadata-conditioning benchmark fields.** New `--arm` (label in the A/B/C/D/R/R+ matrix), `--metadata-conditioning` (was the policy conditioned on the annotate-mode sidecar?), and `--actual-retention PCT` (fraction of the *original* dataset actually trained on — diverges from `--retention`, the nominal prune target, for the KEEP∪ANNOTATE arm where rescued episodes raise effective retention). `ExperimentRecord` gains `arm`, `metadata_conditioning`, `actual_retention_pct`; old rows default them. `calibra experiment list` shows `arm=… +meta` and `(actual N%)`. Supports `experiments/METADATA_CONDITIONING_BENCHMARK.md`.
+
+### Fixed
+
+- **Annotate mode verified against real data.** `tests/test_annotate_integration.py` (marked `integration`) runs `calibra prune --annotate` end-to-end against `lerobot/pusht` (206 episodes, v2 Parquet) and asserts sidecar/dataset episode alignment, disposition partitioning, `DROP` rows carrying integrity flags, populated non-degenerate characterization columns, `ANNOTATE < KEEP` mean coverage (rescue semantics), JSONL == Parquet == `load()` round-trip, and that the coreset output is unchanged by `--annotate`.
+- **`anomaly_score` no longer saturates at 1.0 for every episode on small datasets.** `calibra.assessment.compute_episode_assessments` took the max percentile-rank extremity across *all* ~9 per-episode metrics; with few episodes relative to the metric count, nearly every episode is the batch min or max on *some* metric, so the score collapsed to ~1.0 for the whole batch (visible in `calibra review` and the annotate-mode sidecar). A metric now counts toward `anomaly_score` only when the episode is BOTH in that metric's rank tail (p≤0.1 or p≥0.9) AND ≥2.5 robust-MAD deviations from the batch median — i.e. being last in a tight cluster is not an anomaly, being a genuine magnitude outlier is. On a 12-episode dataset with two jerk-spike episodes, `anomaly_score` is now `1.0` for exactly those two and `0.0` for the rest (was `1.0` for all twelve). The reason list is unchanged. The signal is still weak below ~100 episodes and is documented as such.
 
 ## [0.8.0] — Measured training results
 

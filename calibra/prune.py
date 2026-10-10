@@ -67,7 +67,7 @@ def run_prune(argv: list[str]) -> None:
     p.add_argument(
         "--quality-only",
         action="store_true",
-        help="Stage 1 only — filter quality failures but skip diversity selection",
+        help="Stage 1 only: filter quality failures but skip diversity selection",
     )
     p.add_argument(
         "--format",
@@ -97,7 +97,7 @@ def run_prune(argv: list[str]) -> None:
     q.add_argument(
         "--max-vel-disc-rate",
         type=float,
-        default=0.25,
+        default=None,
         help="Max velocity discontinuity fraction (default: 0.25)",
     )
     q.add_argument(
@@ -187,6 +187,32 @@ def run_prune(argv: list[str]) -> None:
         ),
     )
     p.add_argument(
+        "--annotate",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Annotate mode (ADR-011): write a training-ready sidecar to DIR instead "
+            "of only removing episodes. calibra_annotations.jsonl carries one row per "
+            "episode: disposition (KEEP / DROP / ANNOTATE) plus characterization "
+            "(calibra_score, quality_risk, coverage_value, anomaly_score, redundancy, "
+            "success, n_steps), with calibra_annotations.manifest.json (schema + "
+            "field docs) and the raw calibra_curation_report.json. Redundant episodes "
+            "are marked ANNOTATE (keep them if your trainer conditions on the metadata) "
+            "rather than dropped."
+        ),
+    )
+    p.add_argument(
+        "--annotate-format",
+        choices=["jsonl", "parquet", "both"],
+        default="jsonl",
+        help=(
+            "Sidecar row format for --annotate (default: jsonl). 'parquet' / 'both' "
+            "also write calibra_annotations.parquet and need pyarrow "
+            "(pip install 'calibra-robotics[lerobot]'). The JSONL + manifest are "
+            "always written."
+        ),
+    )
+    p.add_argument(
         "--json",
         "-j",
         action="store_true",
@@ -202,6 +228,9 @@ def run_prune(argv: list[str]) -> None:
             "proceeds directly to coreset selection."
         ),
     )
+    from calibra.dataset_profiles import add_profile_argument
+
+    add_profile_argument(p)
     args = p.parse_args(argv)
 
     if not (0.0 < args.keep <= 1.0):
@@ -241,7 +270,7 @@ def run_prune(argv: list[str]) -> None:
     log("Running diagnostic pipeline ...")
 
     try:
-        report = Pipeline().run(batch, cache=cache)
+        report = Pipeline(profile=args.profile).run(batch, cache=cache)
     except Exception as exc:
         print(f"error running pipeline: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -260,7 +289,23 @@ def run_prune(argv: list[str]) -> None:
     # Apply GR00T-specific defaults before building the selector.
     user_set_spike_rate = args.max_spike_rate is not None
     max_spike_rate = args.max_spike_rate if user_set_spike_rate else 0.10
-    max_vel_disc_rate = args.max_vel_disc_rate
+    user_set_vel_disc = args.max_vel_disc_rate is not None
+    max_vel_disc_rate = args.max_vel_disc_rate if user_set_vel_disc else 0.25
+
+    # A dataset profile can replace the default limits (never explicit flags).
+    if report.dataset_profile:
+        from calibra.dataset_profiles import get_profile
+
+        limits = get_profile(report.dataset_profile).prune_thresholds
+        if not user_set_spike_rate and "max_spike_rate" in limits:
+            max_spike_rate = limits["max_spike_rate"]
+        if not user_set_vel_disc and "max_vel_disc_rate" in limits:
+            max_vel_disc_rate = limits["max_vel_disc_rate"]
+        if limits:
+            log(
+                f"  [profile {report.dataset_profile}] Stage 1 limits: "
+                f"max_spike_rate={max_spike_rate:.2f}, max_vel_disc_rate={max_vel_disc_rate:.2f}"
+            )
     max_dropout = args.max_dropout
     diversity_weight = args.diversity_weight
     entropy_weight = args.entropy_weight
@@ -329,6 +374,30 @@ def run_prune(argv: list[str]) -> None:
     with open(out_path, "w") as f:
         json.dump(out_data, f, indent=2)
     log(f"Coreset index written to {out_path}")
+
+    if args.annotate:
+        from calibra.annotate import write_annotations
+        from calibra.pruning import pruning_result_to_curation_report
+        from calibra.schema.comparison import Disposition
+
+        curation = pruning_result_to_curation_report(
+            result, batch, report=report, redundant_disposition=Disposition.ANNOTATE
+        )
+        try:
+            written = write_annotations(
+                curation,
+                args.annotate,
+                source_dataset=dataset_path,
+                dataset_format=batch.format,
+                parquet=args.annotate_format in ("parquet", "both"),
+            )
+        except ImportError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        for path in written:
+            log(f"  wrote {path}")
+        counts = curation.disposition_counts()
+        log(f"Annotation sidecar written to {args.annotate}/  ({counts})")
 
     # Curriculum Partitioning
     if args.curriculum:

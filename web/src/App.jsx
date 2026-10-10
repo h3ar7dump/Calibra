@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowRight,
   Check,
@@ -7,46 +8,79 @@ import {
   Clipboard,
   ExternalLink,
   Github,
+  Linkedin,
+  Menu,
+  Star,
+  X,
 } from 'lucide-react'
 import './App.css'
 
 const LINKS = {
-  github: 'https://github.com/omertt27/Calibra',
+  github: 'https://github.com/Calibra-Robotics/Calibra',
+  linkedin: 'https://www.linkedin.com/company/calibrarobotics',
   demo: 'https://huggingface.co/spaces/omert27/robot-dataset-health-check',
-  docs: 'https://omertt27.github.io/Calibra/docs/',
-  benchmarks: 'https://github.com/omertt27/Calibra#benchmark-results',
-  license: 'https://github.com/omertt27/Calibra/blob/main/LICENSE',
+  docs: 'https://calibra-robotics.github.io/Calibra/',
+  commands: 'https://calibra-robotics.github.io/Calibra/commands/',
+  benchmarks: 'https://github.com/Calibra-Robotics/Calibra#benchmark-results',
+  license: 'https://github.com/Calibra-Robotics/Calibra/blob/main/LICENSE',
+  licensing: 'https://github.com/Calibra-Robotics/Calibra/blob/main/LICENSING.md',
   pypi: 'https://pypi.org/project/calibra-robotics/',
   productHunt:
     'https://www.producthunt.com/products/calibra-train-with-less-data?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-calibra-cut-robot-training-costs',
 }
 
-const BADGES = [
-  {
-    href: LINKS.github,
-    alt: 'GitHub stars',
-    src: 'https://img.shields.io/github/stars/omertt27/Calibra?style=flat-square&label=stars&labelColor=17211b&color=bde75a',
-  },
-  {
-    href: LINKS.pypi,
-    alt: 'PyPI downloads',
-    src: 'https://img.shields.io/pypi/dm/calibra-robotics?style=flat-square&label=downloads%2Fmo&labelColor=17211b&color=bde75a',
-  },
+const INSTALL_COMMAND = 'pip install calibra-robotics'
+
+const NAV_LINKS = [
+  { href: '#benchmark', label: 'Benchmark' },
+  { href: '#workflow', label: 'How it works' },
+  { href: LINKS.docs, label: 'Docs' },
 ]
 
-const INSTALL_COMMAND = 'pip install calibra-robotics'
+// Trimmed from real `calibra analyze lerobot/pusht` and `calibra audit` output (v0.11.0).
+const ANALYZE_LINES = [
+  { label: 'Dataset', detail: '206 episodes · 25,650 frames', ok: true },
+  { label: 'Timestamps & sync', detail: 'passed', ok: true },
+  { label: 'Episode structure', detail: 'passed', ok: true },
+  { label: 'Motion & control', detail: 'jerk above generic limits', ok: false },
+  { label: 'vs. clean baseline', detail: 'spike rate 5.8% · within normal range', ok: true },
+]
 
 const STATS = [
   { number: '75%', label: 'less training data', note: 'at matched policy performance' },
-  { number: '0.5%', label: 'difference from full-data performance', note: 'LeRobot PushT · 25% retention · 5 seeds' },
-  { number: '67%', label: 'better rare-behavior preservation', note: 'vs. random coreset selection' },
+  { number: '0.8%', label: 'difference from full-data performance', note: 'LeRobot PushT · 25% retention · 5 seeds' },
+  { number: '55%', label: 'better rare-behavior preservation', note: 'vs. random coreset selection' },
 ]
 
 const WORKFLOW = [
-  { number: '01', name: 'Integrity', question: 'Can I trust this dataset?', command: 'calibra integrity' },
-  { number: '02', name: 'Quality', question: 'Is it clean?', command: 'calibra <path>' },
-  { number: '03', name: 'Coverage', question: 'Is it diverse?', command: 'calibra review' },
-  { number: '04', name: 'Optimization', question: 'Can I train faster?', command: 'calibra prune' },
+  {
+    number: '01',
+    name: 'Integrity',
+    question: 'Can I trust this data?',
+    detail: 'Detect corrupted episodes, timing problems, invalid actions, broken frames, and other structural failures.',
+    command: 'calibra integrity',
+  },
+  {
+    number: '02',
+    name: 'Characterize',
+    question: 'What does each episode contain?',
+    detail: 'Measure quality risk, anomaly signals, coverage contribution, redundancy, success, and other episode-level characteristics.',
+    command: 'calibra <path>',
+  },
+  {
+    number: '03',
+    name: 'Coverage',
+    question: 'What information would I lose?',
+    detail: 'Find rare behaviors, under-covered regions, and episodes that contribute meaningful diversity.',
+    command: 'calibra review',
+  },
+  {
+    number: '04',
+    name: 'Decide',
+    question: 'What should I train on?',
+    detail: 'Keep, drop, review, annotate, or downweight episodes, or build a smaller quality-aware training set.',
+    command: 'calibra prune',
+  },
 ]
 
 const ECOSYSTEMS = [
@@ -56,6 +90,144 @@ const ECOSYSTEMS = [
   { name: 'robomimic', detail: 'HDF5', mark: 'RM' },
   { name: 'Hugging Face', detail: 'Hub IDs', logo: 'huggingface.svg' },
 ]
+
+// Decorative hero backdrop: a drifting constellation of nodes that link to any
+// neighbour within reach. Purely visual and non-interactive: it ignores the
+// cursor, is hidden from assistive tech, and freezes to a single static frame
+// when reduced motion is requested.
+const LINK_DIST = 172
+
+function HeroTrajectories() {
+  const canvasRef = useRef(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+
+    let width = 0
+    let height = 0
+    let points = []
+    let raf = 0
+
+    const WAVES = [
+      { yRatio: 0.22, amp: 38, freq: 0.0042, speed: 0.008, opacity: 0.10, width: 1.5, phase: 0 },
+      { yRatio: 0.38, amp: 28, freq: 0.0055, speed: 0.006, opacity: 0.07, width: 1.2, phase: 1.8 },
+      { yRatio: 0.54, amp: 44, freq: 0.0036, speed: 0.010, opacity: 0.09, width: 1.8, phase: 3.5 },
+      { yRatio: 0.70, amp: 22, freq: 0.0064, speed: 0.007, opacity: 0.06, width: 1.0, phase: 0.9 },
+      { yRatio: 0.85, amp: 32, freq: 0.0048, speed: 0.009, opacity: 0.08, width: 1.4, phase: 2.6 },
+    ]
+
+    const seed = () => {
+      const count = Math.round(Math.min(104, Math.max(30, (width * height) / 14000)))
+      points = Array.from({ length: count }, () => ({
+        x: Math.random() * width,
+        y: Math.random() * height,
+        vx: (Math.random() - 0.5) * 0.24,
+        vy: (Math.random() - 0.5) * 0.24,
+      }))
+    }
+
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect()
+      width = rect.width
+      height = rect.height
+      const dpr = Math.min(window.devicePixelRatio || 1, 2)
+      canvas.width = Math.round(width * dpr)
+      canvas.height = Math.round(height * dpr)
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      seed()
+    }
+
+    const step = () => {
+      for (const p of points) {
+        p.x += p.vx
+        p.y += p.vy
+        if (p.x <= 0 || p.x >= width) p.vx *= -1
+        if (p.y <= 0 || p.y >= height) p.vy *= -1
+        p.x = Math.max(0, Math.min(width, p.x))
+        p.y = Math.max(0, Math.min(height, p.y))
+      }
+      for (const w of WAVES) {
+        w.phase += w.speed
+      }
+    }
+
+    const drawWaves = () => {
+      for (const w of WAVES) {
+        const baseY = height * w.yRatio
+        ctx.beginPath()
+        ctx.lineWidth = w.width
+        ctx.strokeStyle = `rgba(255, 255, 255, ${w.opacity})`
+        for (let x = 0; x <= width; x += 2) {
+          const y = baseY + Math.sin(x * w.freq + w.phase) * w.amp
+          x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
+        }
+        ctx.stroke()
+      }
+    }
+
+    const draw = () => {
+      ctx.clearRect(0, 0, width, height)
+
+      drawWaves()
+
+      for (let i = 0; i < points.length; i++) {
+        const a = points[i]
+        for (let j = i + 1; j < points.length; j++) {
+          const b = points[j]
+          const dx = a.x - b.x
+          const dy = a.y - b.y
+          const d = Math.hypot(dx, dy)
+          if (d < LINK_DIST) {
+            ctx.strokeStyle = `rgba(255, 255, 255, ${(1 - d / LINK_DIST) * 0.4})`
+            ctx.lineWidth = 1.2
+            ctx.beginPath()
+            ctx.moveTo(a.x, a.y)
+            ctx.lineTo(b.x, b.y)
+            ctx.stroke()
+          }
+        }
+      }
+
+      for (const p of points) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'
+        ctx.beginPath()
+        ctx.arc(p.x, p.y, 1.9, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+
+    const tick = () => {
+      step()
+      draw()
+      raf = requestAnimationFrame(tick)
+    }
+
+    resize()
+    window.addEventListener('resize', resize)
+
+    const reduce =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reduce) {
+      draw()
+    } else {
+      raf = requestAnimationFrame(tick)
+    }
+
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('resize', resize)
+    }
+  }, [])
+
+  return (
+    <div className="hero-trajectories" aria-hidden="true">
+      <canvas ref={canvasRef} />
+    </div>
+  )
+}
 
 function Reveal({ as: Tag = 'div', className = '', delay = 0, children, ...props }) {
   const ref = useRef(null)
@@ -92,9 +264,87 @@ function Reveal({ as: Tag = 'div', className = '', delay = 0, children, ...props
 function Logo() {
   return (
     <a className="brand" href="#top" aria-label="Calibra home">
-      <img src={`${import.meta.env.BASE_URL}logo-icon.svg`} alt="" />
       <span>Calibra</span>
     </a>
+  )
+}
+
+function StarPill() {
+  const [stars, setStars] = useState(null)
+
+  useEffect(() => {
+    let live = true
+    fetch('https://api.github.com/repos/Calibra-Robotics/Calibra')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (live && d && typeof d.stargazers_count === 'number') setStars(d.stargazers_count)
+      })
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [])
+
+  return (
+    <a className="nav-pill" href={LINKS.github} target="_blank" rel="noreferrer">
+      <Star size={13} /> {stars == null ? 'Star' : stars.toLocaleString()}
+    </a>
+  )
+}
+
+function HeroTerminal() {
+  const [typed, setTyped] = useState('')
+  const [showResults, setShowResults] = useState(false)
+  const CMD = 'calibra analyze lerobot/pusht'
+  const done = typed.length >= CMD.length
+
+  useEffect(() => {
+    let ticker, startTimer, resultTimer
+    startTimer = setTimeout(() => {
+      let i = 0
+      ticker = setInterval(() => {
+        i++
+        setTyped(CMD.slice(0, i))
+        if (i >= CMD.length) {
+          clearInterval(ticker)
+          resultTimer = setTimeout(() => setShowResults(true), 250)
+        }
+      }, 38)
+    }, 800)
+    return () => {
+      clearTimeout(startTimer)
+      clearInterval(ticker)
+      clearTimeout(resultTimer)
+    }
+  }, [])
+
+  return (
+    <Reveal as="div" className="hero-terminal" delay={220}>
+      <div className="hero-terminal-bar">
+        <span><i /><i /><i /></span>
+        calibra analyze
+      </div>
+      <div className="hero-terminal-body">
+        <p className="ht-cmd">
+          <span className="ht-prompt">$</span> {typed}
+          {!done && <span className="ht-cursor" aria-hidden="true" />}
+        </p>
+        {showResults && (
+          <div className="ht-results">
+            {ANALYZE_LINES.map((check) => (
+              <p className={check.ok ? 'ht-ok' : 'ht-warn'} key={check.label}>
+                {check.ok ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+                {check.label}
+                <span className="ht-detail">{check.detail}</span>
+              </p>
+            ))}
+            <p className="ht-score">
+              <strong>train on 175 / 206</strong> 31 redundant episodes dropped
+            </p>
+          </div>
+        )}
+      </div>
+    </Reveal>
   )
 }
 
@@ -118,13 +368,56 @@ function CopyCommand({ large = false }) {
   )
 }
 
+function StatNumber({ raw, active, delay }) {
+  const target = parseFloat(raw)
+  const decimals = raw.includes('.') ? 1 : 0
+  const suffix = raw.replace(/[\d.]/g, '')
+  const [display, setDisplay] = useState(0)
+
+  useEffect(() => {
+    if (!active) return
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setDisplay(target)
+      return
+    }
+    let raf
+    const DURATION = 1500
+    const startAt = performance.now() + delay
+    const tick = (now) => {
+      if (now < startAt) { raf = requestAnimationFrame(tick); return }
+      const t = Math.min((now - startAt) / DURATION, 1)
+      const eased = 1 - Math.pow(1 - t, 3)
+      setDisplay(parseFloat((eased * target).toFixed(decimals)))
+      if (t < 1) raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [active, target, decimals, delay])
+
+  return <strong className="stat-number">{display.toFixed(decimals)}{suffix}</strong>
+}
+
 function StatsBar() {
+  const [active, setActive] = useState(false)
+  const barRef = useRef(null)
+
+  useEffect(() => {
+    const el = barRef.current
+    if (!el) return
+    const obs = new IntersectionObserver(
+      ([e]) => { if (e.isIntersecting) { setActive(true); obs.disconnect() } },
+      { threshold: 0.25 }
+    )
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [])
+
   return (
-    <div className="stats-bar">
+    <div className="stats-bar" ref={barRef}>
       <div className="container stats-grid">
         {STATS.map((stat, index) => (
           <Reveal as="div" className="stat-item" key={stat.number} delay={index * 90}>
-            <strong className="stat-number">{stat.number}</strong>
+            <StatNumber raw={stat.number} active={active} delay={index * 90} />
             <span className="stat-label">{stat.label}</span>
             <span className="stat-note">{stat.note}</span>
           </Reveal>
@@ -133,8 +426,8 @@ function StatsBar() {
       <div className="container">
         <p className="stats-caveat">
           Measured on LeRobot PushT. Curation gains hold up across a broader 5-seed sweep on
-          3 datasets and 3 policy families (BC-MLP, ACT, Diffusion Policy) —{' '}
-          <a href={LINKS.benchmarks} target="_blank" rel="noreferrer">see the full benchmark table</a>.
+          3 datasets and 3 policy families (BC-MLP, ACT, Diffusion Policy).{' '}
+          <a href={LINKS.benchmarks} target="_blank" rel="noreferrer">See the full benchmark table</a>.
         </p>
       </div>
     </div>
@@ -142,7 +435,7 @@ function StatsBar() {
 }
 
 const TAIL_COVERAGE = [
-  { label: 'Calibra coreset', value: 56.0, className: 'highlight' },
+  { label: 'Calibra coreset', value: 52.0, className: 'highlight' },
   { label: 'Random baseline', value: 33.6, className: '' },
 ]
 
@@ -151,7 +444,7 @@ function CoverageGraphic() {
     <Reveal as="div" className="coverage-card">
       <div className="coverage-head">
         <div><span>Tail-behavior coverage</span><strong>41/165 episodes · LeRobot PushT</strong></div>
-        <span className="coverage-score">+67% vs. random</span>
+        <span className="coverage-score">+55% vs. random</span>
       </div>
       <div className="coverage-bars">
         {TAIL_COVERAGE.map((row) => (
@@ -164,47 +457,115 @@ function CoverageGraphic() {
       </div>
       <p className="coverage-footnote">
         Share of held-out rare-behavior episodes represented in a 41-episode coreset at 25%
-        retention — same benchmark run shown above.
+        retention, from the same benchmark run shown above.
       </p>
     </Reveal>
   )
 }
 
 function App() {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const spotlightRef = useRef(null)
+
+  useEffect(() => {
+    const handle = (e) => {
+      const el = spotlightRef.current
+      if (!el) return
+      el.style.setProperty('--mx', `${e.clientX}px`)
+      el.style.setProperty('--my', `${e.clientY}px`)
+    }
+    window.addEventListener('mousemove', handle, { passive: true })
+    return () => window.removeEventListener('mousemove', handle)
+  }, [])
+
   return (
     <div id="top">
+      <div className="spotlight" ref={spotlightRef} />
       <nav className="nav">
         <div className="container nav-inner">
           <Logo />
           <div className="nav-links">
-            <a href="#benchmark">Benchmark</a>
-            <a href="#workflow">How it works</a>
-            <a href={LINKS.docs}>Docs</a>
+            {NAV_LINKS.map((link) => {
+              const external = link.href.startsWith('http')
+              return (
+                <a
+                  href={link.href}
+                  key={link.label}
+                  {...(external ? { target: '_blank', rel: 'noreferrer' } : {})}
+                >
+                  {link.label}
+                </a>
+              )
+            })}
           </div>
           <div className="nav-right">
             <div className="nav-badges">
-              {BADGES.map((badge) => (
-                <a href={badge.href} key={badge.alt} target="_blank" rel="noreferrer">
-                  <img src={badge.src} alt={badge.alt} height={20} />
-                </a>
-              ))}
+              <a className="nav-pill" href={LINKS.licensing} target="_blank" rel="noreferrer">Open Source</a>
+              <StarPill />
+              <a className="nav-pill" href={LINKS.pypi} target="_blank" rel="noreferrer">PyPI</a>
             </div>
             <a className="nav-github" href={LINKS.github} target="_blank" rel="noreferrer">
               <Github size={17} /> GitHub
             </a>
+            <a
+              className="nav-linkedin"
+              href={LINKS.linkedin}
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Calibra on LinkedIn"
+            >
+              <Linkedin size={17} />
+            </a>
+            <button
+              className="nav-toggle"
+              type="button"
+              aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen((v) => !v)}
+            >
+              {menuOpen ? <X size={20} /> : <Menu size={20} />}
+            </button>
           </div>
         </div>
+        {menuOpen && (
+          <div className="nav-menu">
+            <div className="container">
+              {NAV_LINKS.map((link) => {
+                const external = link.href.startsWith('http')
+                return (
+                  <a
+                    href={link.href}
+                    key={link.label}
+                    onClick={() => setMenuOpen(false)}
+                    {...(external ? { target: '_blank', rel: 'noreferrer' } : {})}
+                  >
+                    {link.label}
+                  </a>
+                )
+              })}
+              <a href={LINKS.github} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)}>
+                GitHub
+              </a>
+              <a href={LINKS.linkedin} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)}>
+                LinkedIn
+              </a>
+            </div>
+          </div>
+        )}
       </nav>
 
       <main>
         <header className="hero">
+          <HeroTrajectories />
           <div className="container hero-grid">
             <div className="hero-copy">
               <h1>Stop wasting <span className="accent-word">GPU hours</span> on robot data.</h1>
               <p>
-                Calibra audits dataset integrity, measures quality and coverage, and builds
-                quality-aware coresets — so you train on less data, spend less compute, and
-                know exactly why before training begins.
+                Calibra is an open source robotics dataset decision layer. It audits
+                integrity, measures quality and coverage, and tells you what data to keep, drop,
+                review, or annotate before training, so you train on less data, preserve the
+                behaviors that matter, and understand every decision before spending compute.
+                Full source on GitHub, no account or upload required.
               </p>
               <div className="hero-actions">
                 <a className="button button-primary" href={LINKS.demo} target="_blank" rel="noreferrer">
@@ -218,6 +579,7 @@ function App() {
                 <CopyCommand />
               </div>
             </div>
+            <HeroTerminal />
           </div>
           <a className="scroll-cue" href="#benchmark">
             See benchmark results <ArrowDown size={15} />
@@ -230,10 +592,10 @@ function App() {
           <div className="container">
             <Reveal as="div" className="research-card">
               <div className="research-copy">
-                <h2><strong>75% smaller</strong> dataset. Prediction error within 0.5% of full-data training.</h2>
+                <h2><strong>75% smaller</strong> dataset. Prediction error within 0.8% of full-data training.</h2>
                 <p>
                   Calibra retained 41 of 165 training episodes while preserving more
-                  action-space tail coverage than a random coreset — and matching the
+                  action-space tail coverage than a random coreset, and matching the
                   full-dataset baseline across 5 seeds.
                 </p>
                 <div className="benchmark-meta">
@@ -251,20 +613,20 @@ function App() {
                 <div className="benchmark-row">
                   <span>Full dataset <small>165 episodes</small></span>
                   <div><i style={{ '--bar-width': '100%' }} /></div>
-                  <strong>420.93</strong>
+                  <strong>420.67</strong>
                 </div>
                 <div className="benchmark-row highlight">
                   <span>Calibra <small>41 episodes</small></span>
-                  <div><i style={{ '--bar-width': '99.6%' }} /></div>
-                  <strong>422.77</strong>
+                  <div><i style={{ '--bar-width': '99.2%' }} /></div>
+                  <strong>423.92</strong>
                 </div>
                 <div className="benchmark-row">
                   <span>Random <small>41 episodes</small></span>
                   <div><i style={{ '--bar-width': '97.9%' }} /></div>
-                  <strong>429.61</strong>
+                  <strong>429.77</strong>
                 </div>
                 <div className="tail-coverage">
-                  <div><span>Calibra tail coverage</span><strong>56.0%</strong></div>
+                  <div><span>Calibra tail coverage</span><strong>52.0%</strong></div>
                   <div><span>Random tail coverage</span><strong>33.6%</strong></div>
                 </div>
                 <p>Source: 5-seed retention sweep. Full-data MSE is the unfiltered 165-episode baseline.</p>
@@ -277,7 +639,7 @@ function App() {
           <div className="container">
             <Reveal as="div" className="section-intro">
               <h2>Fix the data question before the model question.</h2>
-              <p>Calibra turns an unknown dataset into a training decision through four explicit checks.</p>
+              <p>Calibra turns an unknown robotics dataset into an explicit training decision.</p>
             </Reveal>
             <div className="workflow-grid">
               {WORKFLOW.map((step, index) => (
@@ -287,7 +649,8 @@ function App() {
                     {index < WORKFLOW.length - 1 && <ArrowRight className="step-arrow" size={20} />}
                   </div>
                   <h3>{step.name}</h3>
-                  <p>{step.question}</p>
+                  <p className="step-question">{step.question}</p>
+                  <p className="step-detail">{step.detail}</p>
                   <code>{step.command}</code>
                 </Reveal>
               ))}
@@ -298,17 +661,21 @@ function App() {
         <section className="proof section">
           <div className="container proof-grid">
             <Reveal as="div" className="proof-copy">
-              <h2>See the problem. Find the episode. Fix it.</h2>
+              <h2>Understand every episode. Make the training decision.</h2>
               <p>
-                Every warning maps to a measurable condition and the exact episodes that triggered it.
-                Calibra runs locally and produces deterministic results you can inspect.
+                Every Calibra decision maps back to measurable signals and the exact episodes that
+                caused it. Run everything locally, inspect the reasoning, and export the result for
+                your training pipeline.
               </p>
               <ul>
-                <li><CheckCircle2 size={18} /> Episode-level root causes</li>
-                <li><CheckCircle2 size={18} /> CI-friendly exit codes</li>
-                <li><CheckCircle2 size={18} /> No upload, account, or API key</li>
+                <li><CheckCircle2 size={18} /> Open source: read, modify, and self-host the code</li>
+                <li><CheckCircle2 size={18} /> Episode-level characterization</li>
+                <li><CheckCircle2 size={18} /> Explicit KEEP / DROP / REVIEW / ANNOTATE decisions</li>
+                <li><CheckCircle2 size={18} /> JSONL and Parquet annotation exports</li>
+                <li><CheckCircle2 size={18} /> CI-friendly, deterministic analysis</li>
+                <li><CheckCircle2 size={18} /> No upload, account, or API key required</li>
               </ul>
-              <a className="text-link" href={LINKS.docs}>Explore the commands <ArrowRight size={16} /></a>
+              <a className="text-link" href={LINKS.commands} target="_blank" rel="noreferrer">Explore the commands <ArrowRight size={16} /></a>
             </Reveal>
             <CoverageGraphic />
           </div>
@@ -345,8 +712,8 @@ function App() {
             <Reveal as="div" className="demo-copy">
               <h2>Inspect a public LeRobot dataset without installing anything.</h2>
               <p>
-                Enter a Hub dataset ID to see integrity checks, quality findings, community
-                comparisons, and a recommended keep fraction.
+                Enter a Hub dataset ID to see which episodes to keep, drop, or annotate,
+                with integrity checks and detector rates compared against clean baselines.
               </p>
               <a className="button button-primary" href={LINKS.demo} target="_blank" rel="noreferrer">
                 Open the live demo <ExternalLink size={16} />
@@ -357,7 +724,7 @@ function App() {
                 <span><i /><i /><i /></span>
                 huggingface.co/spaces/omert27/robot-dataset-health-check
               </div>
-              <img src={`${import.meta.env.BASE_URL}hf-space.png`} alt="Calibra Robot Dataset Health Check on Hugging Face Spaces" />
+              <img src={`${import.meta.env.BASE_URL}hf-space.png`} alt="Calibra Dataset Decisions on Hugging Face Spaces" />
             </Reveal>
           </div>
         </section>
@@ -367,7 +734,7 @@ function App() {
             <Reveal as="div" className="cta-panel">
               <span className="cta-kicker">Before your next training run</span>
               <h2>Check the data first.</h2>
-              <p>Install Calibra locally or inspect a public LeRobot dataset in the browser — free, no account needed.</p>
+              <p>Free and open source. Install Calibra locally or inspect a public LeRobot dataset in the browser, no account, no cloud upload.</p>
               <CopyCommand large />
               <a className="button button-primary" href={LINKS.demo} target="_blank" rel="noreferrer">
                 Try the Hugging Face demo <ExternalLink size={16} />
@@ -380,7 +747,7 @@ function App() {
       <footer>
         <div className="container footer-inner">
           <Logo />
-          <p>Train on less data. Spend less compute. Ship better policies.</p>
+          <p>Open source. Train on less data. Spend less compute. Ship better policies.</p>
           <div>
             <a href={LINKS.productHunt} target="_blank" rel="noopener noreferrer" className="ph-badge">
               <img
@@ -390,9 +757,9 @@ function App() {
                 height={43}
               />
             </a>
-            <a href={LINKS.github}>GitHub</a>
-            <a href={LINKS.docs}>Docs</a>
-            <a href={LINKS.license}>BSL 1.1</a>
+            <a href={LINKS.github} target="_blank" rel="noreferrer">GitHub</a>
+            <a href={LINKS.docs} target="_blank" rel="noreferrer">Docs</a>
+            <a href={LINKS.licensing} target="_blank" rel="noreferrer">BSL 1.1</a>
           </div>
         </div>
       </footer>

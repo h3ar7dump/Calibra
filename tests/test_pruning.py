@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from calibra.pipeline import Pipeline
-from calibra.pruning import CoresetSelector, _greedy_max_coverage
+from calibra.pruning import CoresetSelector, _build_feature_matrix, _greedy_max_coverage
 from calibra.schema.episode import Episode, EpisodeBatch, EpisodeMetadata
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -73,6 +73,79 @@ class TestGreedyMaxCoverage:
     def test_single_episode(self):
         selected = _greedy_max_coverage(np.array([[1.0, 2.0]]), k=1)
         assert selected == [0]
+
+
+# ── diversity_weight sensitivity ───────────────────────────────────────────────
+#
+# Regression coverage for a bug where _build_feature_matrix multiplied each
+# feature block by its weight and then min-max-normalised each column
+# independently — which is invariant to multiplying a whole column by any
+# positive constant, so every positive diversity_weight produced the exact
+# same normalised matrix (and therefore the same coreset) regardless of its
+# value. The fix normalises each block *before* weighting.
+
+
+def _conflicting_ep_data():
+    """
+    4 candidates where action-space diversity and quality-metric diversity
+    disagree about which pair is "more different":
+      ep_0, ep_1: identical action stats, very different spike_rate.
+      ep_2, ep_3: identical spike_rate, very different action stats.
+    """
+    episodes = [
+        _make_ep(action_scale=1.0, episode_id="ep_0"),
+        _make_ep(action_scale=1.0, episode_id="ep_1"),
+        _make_ep(action_scale=1.0, episode_id="ep_2"),
+        _make_ep(action_scale=1.0, episode_id="ep_3"),
+    ]
+    # Force identical action arrays for ep_0/ep_1, and far-apart arrays for ep_2/ep_3.
+    episodes[1].actions = episodes[0].actions.copy()
+    episodes[2].actions = np.zeros_like(episodes[2].actions)
+    episodes[3].actions = np.full_like(episodes[3].actions, 100.0)
+
+    ep_data = {
+        "per_episode_spike_rate": [0.0, 0.9, 0.1, 0.1],
+        "per_episode_vel_disc_rate": [0.0, 0.0, 0.0, 0.0],
+        "per_episode_length": [80, 80, 80, 80],
+    }
+    return episodes, ep_data
+
+
+class TestDiversityWeightSensitivity:
+    def test_feature_matrix_changes_with_weight(self):
+        episodes, ep_data = _conflicting_ep_data()
+        candidates = [0, 1, 2, 3]
+
+        mat_low = _build_feature_matrix(episodes, candidates, ep_data, diversity_weight=0.1)
+        mat_high = _build_feature_matrix(episodes, candidates, ep_data, diversity_weight=0.9)
+
+        assert not np.allclose(mat_low, mat_high), (
+            "diversity_weight=0.1 and diversity_weight=0.9 produced the same "
+            "normalised feature matrix — the weight has no effect."
+        )
+
+    def test_selection_changes_with_weight(self):
+        episodes, ep_data = _conflicting_ep_data()
+        candidates = [0, 1, 2, 3]
+
+        mat_low = _build_feature_matrix(episodes, candidates, ep_data, diversity_weight=0.1)
+        mat_high = _build_feature_matrix(episodes, candidates, ep_data, diversity_weight=0.9)
+
+        selected_low = set(_greedy_max_coverage(mat_low, k=2))
+        selected_high = set(_greedy_max_coverage(mat_high, k=2))
+
+        # Low diversity_weight (quality-dominated) should favor the pair that
+        # differs in spike_rate (ep_0, ep_1); high diversity_weight (action-
+        # dominated) should favor the pair that differs in action stats (ep_2, ep_3)
+        # over the pair that's identical in action space (ep_0, ep_1).
+        assert selected_low == {0, 1}, f"expected quality-diverse pair, got {selected_low}"
+        assert selected_high != selected_low, (
+            f"diversity_weight=0.1 and 0.9 produced the same selection {selected_low} — "
+            "the weight has no effect on which episodes are kept."
+        )
+        assert {0, 1} != selected_high and (2 in selected_high or 3 in selected_high), (
+            f"expected high diversity_weight to favor the action-diverse pair, got {selected_high}"
+        )
 
 
 # ── CoresetSelector ───────────────────────────────────────────────────────────
@@ -272,3 +345,190 @@ class TestCoresetSelector:
         ).select(batch, report)
 
         assert len(result.keep_episode_ids) > 0
+
+
+# ── ADR-011 disposition view ─────────────────────────────────────────────────
+
+
+class TestPruningResultToCurationReport:
+    def _batch(self, ids):
+        episodes = [_make_ep(episode_id=eid) for eid in ids]
+        return EpisodeBatch(
+            episodes=episodes, dataset_name="d", format="hdf5", source_path="/tmp/d.h5"
+        )
+
+    def _result(self, **kw):
+        from calibra.pruning import PruningResult
+
+        defaults = dict(
+            keep_episode_ids=[],
+            quality_fail_ids=[],
+            diversity_pruned_ids=[],
+            quality_scores={},
+            diversity_scores={},
+            n_original=0,
+            n_kept=0,
+            n_quality_failures=0,
+            n_diversity_pruned=0,
+            keep_fraction_actual=0.0,
+        )
+        defaults.update(kw)
+        return PruningResult(**defaults)
+
+    def test_maps_three_buckets_to_dispositions(self):
+        from calibra.pruning import pruning_result_to_curation_report
+        from calibra.schema.comparison import Disposition
+
+        batch = self._batch(["ep_0", "ep_1", "ep_2", "ep_3"])
+        result = self._result(
+            keep_episode_ids=["ep_0", "ep_1"],
+            quality_fail_ids=["ep_2"],
+            diversity_pruned_ids=["ep_3"],
+            quality_scores={"ep_0": 0.02, "ep_1": 0.05, "ep_2": 0.9, "ep_3": 0.1},
+            fail_reasons={"ep_2": ["jerk_spike"], "ep_3": ["diversity_pruned"]},
+            n_original=4,
+            n_kept=2,
+            n_quality_failures=1,
+            n_diversity_pruned=1,
+            keep_fraction_actual=0.5,
+        )
+
+        report = pruning_result_to_curation_report(result, batch)
+
+        by_id = {d.episode_id: d for d in report.dispositions}
+        assert by_id["ep_0"].disposition is Disposition.KEEP
+        assert by_id["ep_1"].disposition is Disposition.KEEP
+        assert by_id["ep_2"].disposition is Disposition.DROP
+        assert by_id["ep_3"].disposition is Disposition.DROP  # redundant → DROP by default
+
+        assert by_id["ep_2"].integrity_flags == ["jerk_spike"]
+        assert by_id["ep_2"].reasons == ["jerk_spike"]
+        assert by_id["ep_3"].integrity_flags == []  # not an integrity failure
+        assert by_id["ep_3"].reasons == ["diversity_pruned"]
+        assert by_id["ep_0"].quality_risk == pytest.approx(0.02)
+        assert by_id["ep_0"].n_steps == 80
+
+        assert report.original_n_episodes == 4
+        assert report.retained_n_episodes == 2
+        assert sorted(report.retained_indices) == [0, 1]
+        assert sorted(report.dropped_indices) == [2, 3]
+        assert report.disposition_counts() == {"KEEP": 2, "DROP": 2}
+
+    def test_redundant_disposition_override_counts_as_retained(self):
+        from calibra.pruning import pruning_result_to_curation_report
+        from calibra.schema.comparison import Disposition
+
+        batch = self._batch(["ep_0", "ep_1", "ep_2"])
+        result = self._result(
+            keep_episode_ids=["ep_0"],
+            diversity_pruned_ids=["ep_1", "ep_2"],
+            quality_scores={"ep_0": 0.0, "ep_1": 0.0, "ep_2": 0.0},
+            fail_reasons={"ep_1": ["diversity_pruned"], "ep_2": ["diversity_pruned"]},
+            n_original=3,
+            n_kept=1,
+            n_diversity_pruned=2,
+            keep_fraction_actual=1 / 3,
+        )
+
+        report = pruning_result_to_curation_report(
+            result, batch, redundant_disposition=Disposition.DOWNWEIGHT
+        )
+
+        assert report.disposition_counts() == {"KEEP": 1, "DOWNWEIGHT": 2}
+        # DOWNWEIGHT is KEEP-like → all three episodes are "in the training set"
+        assert report.retained_n_episodes == 3
+        assert sorted(report.retained_indices) == [0, 1, 2]
+        assert report.dropped_indices == []
+
+    def test_end_to_end_through_selector(self, mixed_batch):
+        from calibra.pruning import pruning_result_to_curation_report
+        from calibra.schema.comparison import Disposition
+
+        report_diag = Pipeline().run(mixed_batch)
+        result = CoresetSelector(keep_fraction=0.5, max_spike_rate=0.05).select(
+            mixed_batch, report_diag
+        )
+
+        curation = pruning_result_to_curation_report(result, mixed_batch)
+
+        assert len(curation.dispositions) == mixed_batch.n_episodes
+        assert [d.episode_index for d in curation.dispositions] == list(
+            range(mixed_batch.n_episodes)
+        )
+        keep_ids = {d.episode_id for d in curation.by_disposition(Disposition.KEEP)}
+        assert keep_ids == set(result.keep_episode_ids)
+        assert curation.original_n_episodes == result.n_original
+        # every episode characterized exactly once
+        assert {d.episode_id for d in curation.dispositions} == {
+            ep.metadata.episode_id for ep in mixed_batch.episodes
+        }
+
+    def test_report_fills_anomaly_and_coverage(self, mixed_batch):
+        """Passing report= populates anomaly_score / coverage_value from assessment."""
+        from calibra.pruning import pruning_result_to_curation_report
+
+        report_diag = Pipeline().run(mixed_batch)
+        result = CoresetSelector(keep_fraction=0.5, max_spike_rate=0.05).select(
+            mixed_batch, report_diag
+        )
+
+        without = pruning_result_to_curation_report(result, mixed_batch)
+        with_report = pruning_result_to_curation_report(result, mixed_batch, report=report_diag)
+
+        # No report → assessment axes stay None; quality_risk still set from result.
+        assert all(d.anomaly_score is None for d in without.dispositions)
+        assert all(d.coverage_value is None for d in without.dispositions)
+        assert any(d.quality_risk is not None for d in without.dispositions)
+
+        # With report → anomaly_score populated for every episode.
+        assert all(d.anomaly_score is not None for d in with_report.dispositions)
+        assert all(0.0 <= d.anomaly_score <= 1.0 for d in with_report.dispositions)
+        # dispositions themselves are unchanged by enrichment
+        assert [d.disposition for d in without.dispositions] == [
+            d.disposition for d in with_report.dispositions
+        ]
+
+    def test_calibra_score_and_redundancy_derived(self, mixed_batch):
+        from calibra.pruning import pruning_result_to_curation_report
+
+        report_diag = Pipeline().run(mixed_batch)
+        result = CoresetSelector(keep_fraction=0.5, max_spike_rate=0.05).select(
+            mixed_batch, report_diag
+        )
+        cur = pruning_result_to_curation_report(result, mixed_batch, report=report_diag)
+
+        for d in cur.dispositions:
+            # calibra_score = 100·(1 - quality_risk), always available
+            assert d.quality_risk is not None
+            assert d.calibra_score == pytest.approx(100.0 * (1.0 - d.quality_risk), abs=0.05)
+            # redundancy = 1 - coverage_value where coverage_value exists
+            if d.coverage_value is not None:
+                assert d.redundancy == pytest.approx(1.0 - d.coverage_value, abs=1e-4)
+            else:
+                assert d.redundancy is None
+        assert any(d.redundancy is not None for d in cur.dispositions)
+
+        # without a report there is no coverage_value → no redundancy, but
+        # calibra_score still derives from result.quality_scores
+        no_report = pruning_result_to_curation_report(result, mixed_batch)
+        assert all(d.redundancy is None for d in no_report.dispositions)
+        assert any(d.calibra_score is not None for d in no_report.dispositions)
+
+    def test_pruningresult_to_curation_report_method(self, mixed_batch):
+        from calibra.schema.comparison import Disposition
+
+        report_diag = Pipeline().run(mixed_batch)
+        result = CoresetSelector(keep_fraction=0.5, max_spike_rate=0.05).select(
+            mixed_batch, report_diag
+        )
+
+        via_method = result.to_curation_report(
+            mixed_batch, report=report_diag, redundant_disposition=Disposition.ANNOTATE
+        )
+        assert via_method.original_n_episodes == result.n_original
+        assert {d.episode_id for d in via_method.dispositions} == {
+            ep.metadata.episode_id for ep in mixed_batch.episodes
+        }
+        # default redundant_disposition is DROP
+        default = result.to_curation_report(mixed_batch)
+        assert "ANNOTATE" not in default.disposition_counts()

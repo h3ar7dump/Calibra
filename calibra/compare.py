@@ -108,7 +108,29 @@ def _interp_vel_disc(yours: float, ref: float, ref_mode: str, ref_label: str) ->
     delta = yours - ref
     rel = abs(delta) / max(abs(ref), 1e-9)
 
-    if ref_mode == "velocity":
+    if ref_mode == "profiled":
+        # The reference was profiled under a dataset profile because its clean
+        # rate departs from its control mode's norm (PushT: 10 Hz mouse-teleop
+        # position targets, ~17% clean). Judge against that baseline, not the
+        # class-wide thresholds below.
+        if rel < 0.30:
+            return (
+                f"Similar to {ref_label}. Within its measured clean range.",
+                "HIGH",
+            )
+        elif delta > 0:
+            return (
+                f"Rougher than {ref_label}'s clean baseline. Investigate abrupt "
+                "teleop corrections, command noise, or timestamp misalignment.",
+                "HIGH",
+            )
+        else:
+            return (
+                f"Smoother than {ref_label}'s clean baseline. Verify the action "
+                "semantics and control frequency match the reference.",
+                "HIGH",
+            )
+    elif ref_mode == "velocity":
         if rel < 0.30:
             return (
                 f"Similar to {ref_label}. Within the expected range for "
@@ -124,7 +146,7 @@ def _interp_vel_disc(yours: float, ref: float, ref_mode: str, ref_label: str) ->
         else:
             return (
                 f"Smoother than {ref_label}. Unusually clean for "
-                "velocity-command data — verify the control mode.",
+                "velocity-command data; verify the control mode.",
                 "HIGH",
             )
     elif ref_mode == "position":
@@ -138,8 +160,8 @@ def _interp_vel_disc(yours: float, ref: float, ref_mode: str, ref_label: str) ->
                 f"Significantly rougher than {ref_label}. "
                 "If using position commands: investigate control noise or "
                 "abrupt operator corrections. "
-                "If using velocity commands: compare to pusht instead "
-                "(expected ~16%).",
+                "If your actions are low-rate 2-D target positions from mouse "
+                "teleop: compare to pusht instead (clean rate ~17%).",
                 "HIGH",
             )
         else:
@@ -176,7 +198,7 @@ def _interp_spike_rate(
 
     if yours_is_scripted and not ref_is_scripted:
         return (
-            f"Yours is a scripted/planner dataset (spike_rate {yours:.1%}) — "
+            f"Yours is a scripted/planner dataset (spike_rate {yours:.1%}), "
             f"significantly higher than human teleop reference {ref_label} "
             f"({ref:.1%}). Planner waypoint transitions produce jerk spikes "
             "at every target switch. This is expected, not a recording defect. "
@@ -271,7 +293,7 @@ def _interp_temporal(yours: float, ref: float, key: str, ref_is_sim: bool) -> tu
             )
         else:
             return (
-                "High dropout. Significant frame loss — likely hardware or "
+                "High dropout. Significant frame loss, likely hardware or "
                 "recording pipeline issue.",
                 "MODERATE",
             )
@@ -291,7 +313,7 @@ def _interp_entropy(yours: float, ref: float, ref_label: str) -> tuple[str, str]
         )
     else:
         return (
-            "Low entropy — possible mode collapse or limited trajectory variation. "
+            "Low entropy: possible mode collapse or limited trajectory variation. "
             "Policy may generalise poorly to out-of-distribution states.",
             "LOW",
         )
@@ -364,6 +386,12 @@ def render_comparison(
     meta = ref_data.get("meta", {})
     ref_label = meta.get("dataset", ref_name)
     ref_mode = meta.get("control_mode", "unknown")
+    # A reference profiled under a dataset profile has its own clean baseline:
+    # interpret against it, and show only class-agnostic claims, since the
+    # class-wide claims do not describe it.
+    ref_profile = meta.get("dataset_profile")
+    interp_mode = "profiled" if ref_profile else ref_mode
+    claims_class = "unknown" if ref_profile else ref_mode
     ref_n_eps = meta.get("n_episodes", "?")
     ref_action_dim = meta.get("action_dim")
     ref_is_sim = _ref_is_sim(ref_metrics)
@@ -378,7 +406,7 @@ def render_comparison(
     thick = "━" * _WIDTH
     lines = [
         thick,
-        f"calibra compare — {Path(your_path).name}  vs.  {ref_name}",
+        f"calibra compare: {Path(your_path).name}  vs.  {ref_name}",
         thick,
         "",
         f"Reference: {header_ref}",
@@ -400,7 +428,7 @@ def render_comparison(
                 "  Scripted datasets have spike_rate ~20–25% and vel_disc_rate",
                 "  <1.5%. Human teleoperation has spike_rate <1% and higher",
                 "  vel_disc_rate. The spike-rate comparison below is expected",
-                "  to show a large gap — this is structural, not a defect.",
+                "  to show a large gap; this is structural, not a defect.",
                 warn_thick,
                 "",
             ]
@@ -423,7 +451,7 @@ def render_comparison(
     y, r = your_metrics["vel_disc_rate"], ref_metrics["vel_disc_rate"]
     delta = (y - r) if y is not None and r is not None else None
     if y is not None and r is not None:
-        interp, conf = _interp_vel_disc(y, r, ref_mode, ref_name)
+        interp, conf = _interp_vel_disc(y, r, interp_mode, ref_name)
     else:
         interp, conf = "Could not compute.", ""
     lines.append(
@@ -435,7 +463,7 @@ def render_comparison(
             _pct(delta),
             _delta_arrow(delta),
             interp,
-            _claims.evidence_line("vel_disc_rate", ref_mode),
+            _claims.evidence_line("vel_disc_rate", claims_class),
             conf,
         )
     )
@@ -464,7 +492,7 @@ def render_comparison(
             _pct(delta),
             _delta_arrow(delta),
             interp,
-            _claims.evidence_line("spike_rate", ref_mode),
+            _claims.evidence_line("spike_rate", claims_class),
             conf,
         )
     )
@@ -557,7 +585,7 @@ def render_comparison(
             f"{delta:+.2f} bits/dim" if delta is not None else "n/a",
             _delta_arrow(delta),
             interp,
-            _claims.evidence_line("action_entropy", ref_mode),
+            _claims.evidence_line("action_entropy", claims_class),
             conf,
         )
     )
@@ -600,7 +628,7 @@ def _recommended_actions(
             ids = ", ".join(str(a.episode_id) for a in jerk_eps[:6])
             suffix = f" (and {len(jerk_eps) - 6} more)" if len(jerk_eps) > 6 else ""
             actions.append(
-                f"Prune episode(s) {ids}{suffix} — jerk outliers detected by MAD analysis."
+                f"Prune episode(s) {ids}{suffix}: jerk outliers detected by MAD analysis."
             )
 
     # High dropout → fix recording pipeline
@@ -749,7 +777,7 @@ def render_community_section(
         label = _COMMUNITY_LABELS.get(key, key)
 
         if val is None or p is None:
-            lines.append(f"  {label:<28} {'n/a':>8}  {'n/a':>8}  {'—':>6}")
+            lines.append(f"  {label:<28} {'n/a':>8}  {'n/a':>8}  {'n/a':>6}")
             continue
 
         higher_better = key in _COMMUNITY_HIGHER_BETTER or key == "ldlj"
@@ -767,7 +795,7 @@ def render_community_section(
             p50_str = f"{p50:.1%}" if p50 is not None else "n/a"
 
         if rank is None:
-            rank_str, status = "—", ""
+            rank_str, status = "n/a", ""
         elif rank >= 75:
             rank_str, status = f"top {100 - rank:.0f}%", "✅"
         elif rank >= 40:
@@ -792,6 +820,7 @@ def render_community_section(
 def run_compare(argv: list[str]) -> None:
     import argparse
 
+    from calibra.analyzers.base import parse_gripper_dims
     from calibra.analyzers.coverage import CoverageEntropyAnalyzer
     from calibra.analyzers.smoothness import ControlSmoothnessAnalyzer
     from calibra.analyzers.task_structure import TaskStructureAnalyzer
@@ -852,10 +881,7 @@ def run_compare(argv: list[str]) -> None:
         reader = _get_reader(args.format)
 
     # resolve gripper dims
-    gripper_dims: list[int] = [-1]  # default: last dim
-    if args.gripper_dims is not None:
-        raw = args.gripper_dims.strip()
-        gripper_dims = [int(x) for x in raw.split(",") if x.strip()] if raw else []
+    gripper_dims = parse_gripper_dims(args.gripper_dims)
 
     def log(msg: str) -> None:
         print(msg, file=sys.stderr, flush=True)
@@ -930,7 +956,7 @@ def run_compare(argv: list[str]) -> None:
         elif community is not None:
             print(
                 f"\n[community] Only {community.get('n', 0)} records in Calibra Cloud for "
-                f"'{args.policy}' — need ≥5 to show percentiles. Record outcomes with "
+                f"'{args.policy}': need ≥5 to show percentiles. Record outcomes with "
                 "`calibra predict --record-outcome RATE` to contribute."
             )
         else:

@@ -28,8 +28,6 @@ Exit codes
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import sys
 from datetime import date
 from typing import Optional
@@ -54,7 +52,7 @@ def _metric_row(
 ) -> str:
     """Return a markdown table row with a status icon."""
     if value is None:
-        return f"| {name} | — | {unit} | ✅ |"
+        return f"| {name} | n/a | {unit} | ✅ |"
 
     if direction == "higher_worse":
         if value >= crit:
@@ -74,43 +72,52 @@ def _metric_row(
     return f"| {name} | {value:.4g} | {unit} | {icon} |"
 
 
-def _register_badge_with_cloud(dataset_id: str, status: str) -> None:
-    """POST certification status to the Calibra badge server (silent, non-blocking)."""
-    import urllib.request
+def _detect_eval_env_type(format_str: str) -> Optional[str]:
+    """Return 'simulator' or 'hardware' when the ingestion format makes it unambiguous, else None."""
+    if format_str == "isaac_lab":
+        return "simulator"
+    if format_str == "mcap":
+        return "hardware"
+    return None
 
-    no_sync = os.environ.get("CALIBRA_NO_CLOUD_SYNC", "")
-    if no_sync.lower() in ("1", "true"):
-        return
 
-    endpoint = (
-        os.environ.get("CALIBRA_CLOUD_ENDPOINT", "https://outcomes.calibra.ai").rstrip("/")
-        + "/v1/badge"
-    )
-
+def _count_quality_passing(batch, report) -> Optional[int]:
+    """Run Stage-1 quality filter and return the count of episodes that pass."""
     try:
-        payload = json.dumps(
-            {
-                "dataset_id": dataset_id,
-                "status": status,
-                "calibra_version": __version__,
-            }
-        ).encode("utf-8")
-        req = urllib.request.Request(
-            endpoint,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=3):
-            pass
+        from calibra.pruning import CoresetSelector
+
+        result = CoresetSelector(quality_only=True).select(batch, report)
+        return result.n_original - result.n_quality_failures
     except Exception:
-        pass
+        return None
+
+
+_STATIC_BADGES = {
+    "CERTIFIED": "https://img.shields.io/badge/Calibra-CERTIFIED-brightgreen",
+    "PROVISIONALLY_CERTIFIED": "https://img.shields.io/badge/Calibra-PROVISIONAL-yellow",
+    "NOT_CERTIFIED": "https://img.shields.io/badge/Calibra-NOT%20CERTIFIED-red",
+}
+
+
+def _badge_url(dataset_id: Optional[str], status_key: str) -> str:
+    """Static shields.io badge, unless an installed extension serves a live one (ADR-012)."""
+    if dataset_id:
+        from calibra.plugins import get_registry
+
+        live = get_registry().badge_url
+        if live is not None:
+            url = live(dataset_id, status_key)
+            if url:
+                return url
+    return _STATIC_BADGES[status_key]
 
 
 def generate_card(
     report: DiagnosticReport,
     policy_family: Optional[str] = None,
     dataset_id: Optional[str] = None,
+    episodes_used: Optional[int] = None,
+    eval_env_type: Optional[str] = None,
 ) -> tuple[str, str]:
     """
     Generate a HuggingFace dataset card Markdown string.
@@ -137,16 +144,7 @@ def generate_card(
         status = "NOT CERTIFIED"
         status_key = "NOT_CERTIFIED"
 
-    if dataset_id:
-        _badge_url = f"https://outcomes.calibra.ai/badge/{dataset_id}"
-        badge = f"![Calibra: {status}]({_badge_url})"
-    else:
-        _static = {
-            "CERTIFIED": "https://img.shields.io/badge/Calibra-CERTIFIED-brightgreen",
-            "PROVISIONALLY_CERTIFIED": "https://img.shields.io/badge/Calibra-PROVISIONAL-yellow",
-            "NOT_CERTIFIED": "https://img.shields.io/badge/Calibra-NOT%20CERTIFIED-red",
-        }
-        badge = f"![Calibra: {status}]({_static[status_key]})"
+    badge = f"![Calibra: {status}]({_badge_url(dataset_id, status_key)})"
 
     today = date.today().isoformat()
     policy_str = policy_family or "generic"
@@ -192,7 +190,7 @@ def generate_card(
 > **{report.dataset_name}** · Profiled on {today} · {report.n_episodes} episodes · {report.n_samples:,} steps · policy: `{policy_str}`
 
 **Certification status:** {status}
-**Calibra Score:** {cs:.1f} / 100 — *{cs_cat}*
+**Calibra Score:** {cs:.1f} / 100 · *{cs_cat}*
 
 | Dimension | Score | Max |
 |-----------|------:|----:|
@@ -221,21 +219,67 @@ def generate_card(
         card += "### Quality Issues\n\n"
         for d in pred["deductions"]:
             sev = "**CRITICAL**" if d["severity"] == "CRITICAL" else "_WARNING_"
-            card += f"- {sev} `{d['metric']}` — {d['reason'][:120]}\n"
+            card += f"- {sev} `{d['metric']}`: {d['reason'][:120]}\n"
         card += "\n"
 
     card += (
-        f"### Recommended Coreset\n\n"
-        f"Run `calibra prune <dataset> --keep 0.3` to select the most diverse "
-        f"30% of quality-passing episodes before training.\n\n"
-        f"---\n"
-        f"_Generated by [Calibra](https://github.com/omerTT/Calibra) v{__version__}_\n"
+        "### Recommended Coreset\n\n"
+        "Run `calibra prune <dataset> --keep 0.3` to select the most diverse "
+        "30% of quality-passing episodes before training.\n\n"
     )
+
+    # ── Dataset Provenance ────────────────────────────────────────────────────
+    prov_rows = [f"| Episodes (total) | {report.n_episodes} | auto |"]
+
+    if episodes_used is not None:
+        n_filtered = report.n_episodes - episodes_used
+        note = (
+            f"auto: {n_filtered} failed quality filter"
+            if n_filtered > 0
+            else "auto: all passed quality filter"
+        )
+        prov_rows.append(f"| Episodes (quality-passing) | {episodes_used} | {note} |")
+    else:
+        prov_rows.append(
+            "| Episodes (quality-passing) | n/a | run `calibra prune --quality-only` to compute |"
+        )
+
+    if eval_env_type:
+        prov_rows.append(
+            f"| Evaluation environment type | {eval_env_type} | "
+            f"auto-detected from `{report.format}` format; confirm name/version below |"
+        )
+    else:
+        prov_rows.append(
+            "| Evaluation environment type | n/a | fill in manually (simulator / hardware) |"
+        )
+
+    card += "### Dataset Provenance\n\n"
+    card += "| Field | Value | Notes |\n"
+    card += "|-------|-------|-------|\n"
+    card += "\n".join(prov_rows) + "\n\n"
+    card += (
+        "> **`known_defects`**: human-fill only; do not infer from detector output.\n"
+        "> Run `calibra review` to inspect flagged episodes, then record confirmed defects here:\n"
+        ">\n"
+        "> ```yaml\n"
+        "> known_defects: []\n"
+        "> # example:\n"
+        "> #   - episode_id: ep_042\n"
+        '> #     defect: "gripper slip, contact force anomaly confirmed in review"\n'
+        "> ```\n\n"
+    )
+
+    card += f"---\n_Generated by [Calibra](https://github.com/Calibra-Robotics/Calibra) v{__version__}_\n"
 
     return card, status_key
 
 
-def generate_yaml_frontmatter(report: DiagnosticReport) -> str:
+def generate_yaml_frontmatter(
+    report: DiagnosticReport,
+    episodes_used: Optional[int] = None,
+    eval_env_type: Optional[str] = None,
+) -> str:
     """
     Generate YAML front-matter tags for HuggingFace dataset cards.
 
@@ -245,13 +289,18 @@ def generate_yaml_frontmatter(report: DiagnosticReport) -> str:
     certified = "true" if n_crit == 0 else "false"
     score_result = compute_score(report)
 
-    return (
+    yaml = (
         f"calibra_certified: {certified}\n"
         f'calibra_version: "{__version__}"\n'
         f"calibra_n_episodes: {report.n_episodes}\n"
         f"calibra_score: {score_result['total_score']:.1f}\n"
         f'calibra_score_category: "{score_result["category"]}"\n'
     )
+    if episodes_used is not None:
+        yaml += f"calibra_episodes_used: {episodes_used}\n"
+    if eval_env_type is not None:
+        yaml += f'calibra_eval_env_type: "{eval_env_type}"\n'
+    return yaml
 
 
 def push_to_hub(card_text: str, repo_id: str, status_key: str = "CERTIFIED") -> None:
@@ -291,7 +340,9 @@ def push_to_hub(card_text: str, repo_id: str, status_key: str = "CERTIFIED") -> 
         repo_type="dataset",
     )
     print(f"  Quality card pushed to https://huggingface.co/datasets/{repo_id}")
-    _register_badge_with_cloud(repo_id, status_key)
+    from calibra.plugins import emit
+
+    emit("card_pushed", repo_id, status_key)
 
 
 # ── CLI entry point ───────────────────────────────────────────────────────────
@@ -354,8 +405,9 @@ def run_card(argv: list[str]) -> None:
 
         reader = _get_reader(args.format)
 
+    pipeline = Pipeline()
     try:
-        report = Pipeline().analyze_path(
+        report = pipeline.analyze_path(
             dataset_path,
             policy_family=args.policy,
             reader=reader,
@@ -370,8 +422,18 @@ def run_card(argv: list[str]) -> None:
         print(report.model_dump_json(indent=2))
         sys.exit(0)
 
+    batch = getattr(pipeline, "_last_batch", None)
+    episodes_used = _count_quality_passing(batch, report) if batch is not None else None
+    eval_env_type = _detect_eval_env_type(report.format)
+
     hub_id = dataset_path if not dataset_path.startswith("/") else None
-    card, status_key = generate_card(report, policy_family=args.policy, dataset_id=hub_id)
+    card, status_key = generate_card(
+        report,
+        policy_family=args.policy,
+        dataset_id=hub_id,
+        episodes_used=episodes_used,
+        eval_env_type=eval_env_type,
+    )
 
     if args.out:
         from pathlib import Path

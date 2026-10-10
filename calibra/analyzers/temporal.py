@@ -411,7 +411,7 @@ class TemporalAnalyzer(Analyzer):
             ),
             implication=(
                 "Imitation learning assumes each (obs, action) pair is causally "
-                "aligned. Misaligned samples corrupt the BC gradient signal — "
+                "aligned. Misaligned samples corrupt the BC gradient signal: "
                 "the policy learns to predict actions for the wrong observation."
             ),
             affected_fraction=float(stat),
@@ -480,7 +480,7 @@ class TemporalAnalyzer(Analyzer):
             compatible = True
             if dropout is not None and dropout > self.dropout_warning:
                 caveats.append(
-                    "ACT uses fixed-length action chunks — dropout creates "
+                    "ACT uses fixed-length action chunks, so dropout creates "
                     "variable-length gaps that misalign chunk boundaries."
                 )
                 compatible = None
@@ -546,8 +546,7 @@ class TemporalAnalyzer(Analyzer):
         """
         # Quick precheck to avoid materializing lazy video episodes if no joint velocity exists
         has_joint_vel = any(
-            any(vk in k.lower() for vk in _JOINT_VEL_KEYS)
-            for k in batch.modalities
+            any(vk in k.lower() for vk in _JOINT_VEL_KEYS) for k in batch.modalities
         )
         if not has_joint_vel:
             return None, None
@@ -759,7 +758,7 @@ class TemporalAnalyzer(Analyzer):
             threshold=_ACTION_DROPOUT_WARNING,
             interpretation=(
                 f"{stat:.1%} of steps have near-zero actions while the state continues "
-                "to move — indicating dropped commands rather than goal-convergence."
+                "to move, indicating dropped commands rather than goal-convergence."
             ),
             implication=(
                 "Silent action dropout corrupts demonstration quality: the robot "

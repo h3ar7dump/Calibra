@@ -34,6 +34,7 @@ from calibra.analyzers.base import Analyzer
 from calibra.analyzers.blur import BlurAnalyzer
 from calibra.analyzers.calibration_drift import CalibrationDriftAnalyzer
 from calibra.analyzers.camera_freeze import CameraFreezeAnalyzer
+from calibra.analyzers.camera_view import CameraViewMismatchAnalyzer
 from calibra.analyzers.coverage import CoverageEntropyAnalyzer
 from calibra.analyzers.duplicate_frame import DuplicateFrameAnalyzer
 from calibra.analyzers.force_torque import ForceTorqueContactAnalyzer
@@ -75,7 +76,12 @@ _INTEGRITY_CATEGORIES: dict[str, frozenset[str]] = {
     ),
     "Episode structure": frozenset({"action_dropout_rate", "short_episode_fraction"}),
     "Camera feed": frozenset(
-        {"duplicate_frame_rate", "camera_freeze_events", "blurry_episode_fraction"}
+        {
+            "duplicate_frame_rate",
+            "camera_freeze_events",
+            "blurry_episode_fraction",
+            "camera_view_name_mismatch",
+        }
     ),
     "Motion & control": frozenset(
         {"ldlj", "jerk_spike_rate", "velocity_discontinuity_rate", "joint_offset_max_abs"}
@@ -95,6 +101,7 @@ def _combined_analyzers() -> list[Analyzer]:
         DuplicateFrameAnalyzer(),
         CameraFreezeAnalyzer(),
         BlurAnalyzer(),
+        CameraViewMismatchAnalyzer(),
         CalibrationDriftAnalyzer(),
         CoverageEntropyAnalyzer(),
         PhaseBalanceAnalyzer(),
@@ -167,11 +174,12 @@ def run_analysis(
     policy_family: Optional[str] = None,
     keep_fraction: Optional[float] = None,
     cache=None,
+    profile: Optional[str] = None,
 ) -> AnalysisResult:
     """Pure function: batch in, full analysis out. No argv, no printing —
     the CLI wrapper (run_analyze) and any future caller (web UI, notebook)
     both go through this."""
-    pipeline = Pipeline(analyzers=_combined_analyzers())
+    pipeline = Pipeline(analyzers=_combined_analyzers(), profile=profile)
     report = pipeline.run(batch, policy_family=policy_family, cache=cache)
 
     score_result = compute_score(report)
@@ -246,13 +254,13 @@ def render_analysis(result: AnalysisResult) -> str:
         icon = _LEVEL_ICON[level] if level is not None else "·  "
         suffix = "" if level is not None else "  (not evaluated)"
         lines.append(f"    {icon} {category}{suffix}")
-    lines.append(f"    Integrity score: {result.integrity_score}/100 — {result.integrity_status}")
+    lines.append(f"    Integrity score: {result.integrity_score}/100 · {result.integrity_status}")
 
     lines.append(_THIN)
     q = result.score_result
     cov = q["dimensions"]["coverage_diversity"]
     cov_pct = cov["score"] / cov["max"] * 100 if cov["max"] else 0.0
-    lines.append(f"  Quality (Calibra Score)   {q['total_score']:5.1f} / 100   —  {q['category']}")
+    lines.append(f"  Quality (Calibra Score)   {q['total_score']:5.1f} / 100   ·  {q['category']}")
     lines.append(f"  Coverage / diversity      {cov_pct:5.1f} / 100")
     if result.redundancy is not None:
         lines.append(
@@ -260,10 +268,10 @@ def render_analysis(result: AnalysisResult) -> str:
         )
     elif r.n_episodes < 5:
         lines.append(
-            "  Redundancy (estimated)    n/a — dataset has < 5 episodes (need >= 5 to diagnose)"
+            "  Redundancy (estimated)    n/a: dataset has < 5 episodes (need >= 5 to diagnose)"
         )
     else:
-        lines.append("  Redundancy (estimated)    n/a — requires proprioceptive/state observations")
+        lines.append("  Redundancy (estimated)    n/a: requires proprioceptive/state observations")
 
     lines.append(_THIN)
     lines.append("  RECOMMENDATION")
@@ -417,6 +425,9 @@ def run_analyze(argv: list[str]) -> None:
         default=None,
         help="Cache directory for incremental analysis (see `calibra --cache-dir`)",
     )
+    from calibra.dataset_profiles import add_profile_argument
+
+    add_profile_argument(p)
     args = p.parse_args(argv)
 
     if args.keep is not None and not (0.0 < args.keep <= 1.0):
@@ -456,7 +467,11 @@ def run_analyze(argv: list[str]) -> None:
 
     try:
         result = run_analysis(
-            batch, policy_family=args.policy, keep_fraction=args.keep, cache=cache
+            batch,
+            policy_family=args.policy,
+            keep_fraction=args.keep,
+            cache=cache,
+            profile=args.profile,
         )
     except Exception as exc:
         print(f"error running analysis: {exc}", file=sys.stderr)
@@ -464,7 +479,10 @@ def run_analyze(argv: list[str]) -> None:
 
     if args.export:
         if result.prune_result is None:
-            print("error: cannot export — no coreset recommendation was computed", file=sys.stderr)
+            print(
+                "error: cannot export because no coreset recommendation was computed",
+                file=sys.stderr,
+            )
             sys.exit(1)
         with open(args.export, "w") as f:
             json.dump(result.prune_result.to_dict(), f, indent=2)

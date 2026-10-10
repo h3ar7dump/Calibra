@@ -437,6 +437,31 @@ class TestActionStateDivergenceValidation:
         assert div_flags
         assert div_flags[0].level == RiskLevel.CRITICAL
 
+    def test_non_radian_state_is_info_not_critical(self):
+        """Pixel-space state (pusht-like, 0-512) must not be scored in radians."""
+        rng = np.random.default_rng(7)
+        episodes = []
+        for i in range(5):
+            state = rng.uniform(10, 500, (100, 3)).astype(np.float32)
+            actions = state + rng.normal(0, 15, (100, 3)).astype(np.float32)
+            episodes.append(
+                Episode(
+                    metadata=EpisodeMetadata(episode_id=f"ep_{i}"),
+                    timestamps=np.arange(100) * 0.1,
+                    observations={"state": state},
+                    actions=actions,
+                )
+            )
+        batch = EpisodeBatch(
+            episodes=episodes, dataset_name="px", format="hdf5", source_path="/tmp/px"
+        )
+        div_flag, div_raw = ControlSmoothnessAnalyzer()._check_action_state_divergence(batch)
+        assert div_flag is not None
+        assert div_flag.level == RiskLevel.INFO
+        assert div_flag.threshold is None
+        assert div_raw["units_not_radians"] is True
+        assert 0 < div_raw["relative_divergence"] < 0.1
+
     def test_scripted_downgrade_critical_to_warning(self):
         """When scripted signature is detected, CRITICAL divergence → WARNING."""
         rng = np.random.default_rng(7)
@@ -698,3 +723,27 @@ class TestPruneScriptedAutoAdjust:
         src = inspect.getsource(prune_module.run_prune)
         assert "scripted" in src.lower()
         assert "0.30" in src or "_SCRIPTED_AUTO_SPIKE" in src
+
+
+def test_jerk_metrics_independent_of_action_dtype():
+    # Integer-valued actions (like PushT's pixel targets) put jerk values exactly
+    # on the k × median boundary; float32 rounding used to break those ties
+    # differently from float64, so the same PushT data flagged 7 vs 3 episodes.
+    # Derivatives are now always taken in float64, whatever the reader returns.
+    from calibra.analyzers.smoothness import _get_velocity
+
+    rng = np.random.default_rng(0)
+    ts = np.arange(160, dtype=np.float64) * 0.1
+    acts = np.cumsum(rng.integers(-3, 4, (160, 2)), axis=0).astype(np.float64) + 200.0
+    eps = [
+        Episode(
+            metadata=EpisodeMetadata(episode_id="e"),
+            timestamps=ts,
+            observations={},
+            actions=acts.astype(dt),
+        )
+        for dt in (np.float32, np.float64)
+    ]
+    assert _get_velocity(eps[0], "position", [0, 1]).dtype == np.float64
+    for fn in (_episode_jerk_spike_fraction, _episode_vel_disc_fraction, _episode_ldlj):
+        assert fn(eps[0], "position", [0, 1]) == fn(eps[1], "position", [0, 1])

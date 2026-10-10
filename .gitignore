@@ -48,6 +48,9 @@ htmlcov/
 .pytype/
 nosetests.xml
 coverage.xml
+
+# Locally generated Calibra HTML reports (repo root only)
+/report.html
 *.cover
 *.py,cover
 .coverage
@@ -88,3 +91,4 @@ data/
 # OS files
 .DS_Store
 Thumbs.db
+.vscode/settings.json

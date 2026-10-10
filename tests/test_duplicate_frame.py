@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from calibra.analyzers.duplicate_frame import DuplicateFrameAnalyzer
+from calibra.analyzers.duplicate_frame import DuplicateFrameAnalyzer, repeated_transitions
 from calibra.schema.episode import Episode, EpisodeBatch, EpisodeMetadata
 from calibra.schema.report import RiskLevel
 
@@ -70,3 +70,78 @@ class TestDuplicateFrameAnalyzer:
 
     def test_requires_images_capability(self):
         assert DuplicateFrameAnalyzer.requires == frozenset({"images"})
+
+
+# ── repeated_transitions: what counts as a repeated frame ───────────────────
+
+
+def _moving_dot_frames(n_steps: int = 30, size: int = 96) -> np.ndarray:
+    """Static background with a small dot moving 1 px per step (PushT-like)."""
+    frames = np.full((n_steps, size, size, 3), 200, dtype=np.uint8)
+    for t in range(n_steps):
+        frames[t, 40:46, 10 + t : 16 + t] = 30
+    return frames
+
+
+class TestRepeatedTransitions:
+    def test_small_moving_object_is_not_a_repeat(self):
+        # Mean abs diff here is ~0.3 (below the old 0.5 threshold), yet the
+        # camera is clearly live: the old detector blocked PushT for this.
+        frames = _moving_dot_frames()
+        assert np.abs(np.diff(frames.astype(np.float32), axis=0)).mean() < 0.5
+        assert not repeated_transitions(frames).any()
+
+    def test_live_camera_on_still_scene_is_not_a_repeat(self):
+        rng = np.random.default_rng(0)
+        scene = np.full((20, 32, 32, 3), 120.0)
+        noisy = np.clip(scene + rng.normal(0, 2.0, scene.shape), 0, 255).astype(np.uint8)
+        assert not repeated_transitions(noisy).any()
+
+    def test_re_emitted_frame_is_a_repeat(self):
+        frames = _moving_dot_frames()
+        frames[10:15] = frames[10]
+        assert repeated_transitions(frames).tolist() == [9 < t < 14 for t in range(29)]
+
+    def test_float_images_in_unit_range(self):
+        frames = _moving_dot_frames().astype(np.float32) / 255.0
+        frames[5] = frames[4]
+        assert repeated_transitions(frames).tolist() == [t == 4 for t in range(29)]
+
+
+def test_moving_object_dataset_not_flagged():
+    episodes = []
+    for i in range(3):
+        ep = _make_ep(f"ep_{i}")
+        ep.observations["camera_rgb"] = _moving_dot_frames(n_steps=ep.n_steps)
+        episodes.append(ep)
+    flag = DuplicateFrameAnalyzer().analyze(_make_batch(episodes)).flags[0]
+    assert flag.level == RiskLevel.OK
+
+
+def test_freeze_check_reuses_repeat_mask_but_respects_changed_thresholds(monkeypatch):
+    from calibra.analyzers import duplicate_frame
+    from calibra.analyzers.camera_freeze import CameraFreezeAnalyzer
+
+    ep = _make_ep()
+    ep.observations["camera_rgb"] = np.broadcast_to(
+        np.arange(ep.n_steps, dtype=np.uint8)[:, None, None, None],
+        (ep.n_steps, 8, 8, 3),
+    ).copy()
+    batch = _make_batch([ep])
+    calls = []
+    compute = duplicate_frame.repeated_transitions
+
+    def track_compute(images, pixel_tolerance, min_changed_fraction):
+        calls.append((pixel_tolerance, min_changed_fraction))
+        return compute(images, pixel_tolerance, min_changed_fraction)
+
+    monkeypatch.setattr(duplicate_frame, "repeated_transitions", track_compute)
+    duplicate = DuplicateFrameAnalyzer().analyze(batch)
+    freeze = CameraFreezeAnalyzer().analyze(batch)
+    assert duplicate.flags[0].observed.value == 1.0
+    assert freeze.raw_metrics["freeze_episodes"][0]["run_length"] == ep.n_steps - 1
+    assert len(calls) == 1
+
+    stricter = CameraFreezeAnalyzer(pixel_tolerance=0.0).analyze(batch)
+    assert stricter.raw_metrics["freeze_episodes"] == []
+    assert len(calls) == 2

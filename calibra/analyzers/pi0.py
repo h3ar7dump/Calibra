@@ -29,7 +29,7 @@ from typing import Optional
 
 import numpy as np
 
-from calibra.analyzers.base import Analyzer
+from calibra.analyzers.base import Analyzer, default_gripper_dims
 from calibra.schema.episode import EpisodeBatch
 from calibra.schema.report import (
     AnalyzerResult,
@@ -68,12 +68,16 @@ class Pi0CompatibilityAnalyzer(Analyzer):
         Hz above which control frequency is flagged as too fast.
     known_action_dims : set[int]
         Action dimensions that match standard π0 robot configurations.
+    gripper_dims : list[int]
+        Action columns excluded from the smoothness check, as in
+        ControlSmoothnessAnalyzer. Same default, so dataset profiles apply here too.
     """
 
     chunk_size: int = _CHUNK_SIZE
     freq_low_warning: float = _FREQ_LOW_WARNING
     freq_high_warning: float = _FREQ_HIGH_WARNING
     known_action_dims: set[int] = field(default_factory=lambda: set(_KNOWN_ACTION_DIMS))
+    gripper_dims: list[int] = field(default_factory=default_gripper_dims)
 
     @property
     def name(self) -> str:
@@ -220,7 +224,7 @@ class Pi0CompatibilityAnalyzer(Analyzer):
                         threshold=self.freq_high_warning,
                         interpretation=(
                             f"Mean control frequency {mean_freq:.1f} Hz exceeds "
-                            f"{self.freq_high_warning} Hz — chunks cover < 0.5 s of motion."
+                            f"{self.freq_high_warning} Hz, so chunks cover < 0.5 s of motion."
                         ),
                         implication=(
                             "Very high-frequency data means π0 chunks represent short "
@@ -253,7 +257,9 @@ class Pi0CompatibilityAnalyzer(Analyzer):
         # ── 6. Trajectory smoothness ──────────────────────────────────────────
         from calibra.analyzers.smoothness import ControlSmoothnessAnalyzer
 
-        smooth_result = ControlSmoothnessAnalyzer().analyze(batch)
+        smooth_result = ControlSmoothnessAnalyzer(gripper_dims=list(self.gripper_dims)).analyze(
+            batch
+        )
         ldlj_raw = smooth_result.raw_metrics.get("ldlj", {}).get("mean_ldlj")
         raw["mean_ldlj"] = ldlj_raw
         if ldlj_raw is not None and ldlj_raw < _LDLJ_WARNING:

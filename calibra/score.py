@@ -371,7 +371,7 @@ def render_score(result: dict) -> str:
         f"  Episodes : {result['n_episodes']}  ·  Steps: {result['n_samples']}",
         "",
         _THIN,
-        f"  {icon}  {score:.1f} / 100  —  {category}",
+        f"  {icon}  {score:.1f} / 100  ·  {category}",
         _THIN,
         "",
     ]
@@ -451,6 +451,9 @@ def run_score(argv: list[str]) -> None:
         metavar="REF",
         help="Optional reference profile for context (e.g. 'aloha', 'pusht')",
     )
+    from calibra.dataset_profiles import add_profile_argument
+
+    add_profile_argument(p)
     args = p.parse_args(argv)
 
     dataset_path = args.path
@@ -469,7 +472,7 @@ def run_score(argv: list[str]) -> None:
     log(f"Scoring {dataset_path!r} ...")
 
     try:
-        report: DiagnosticReport = Pipeline().analyze_path(
+        report: DiagnosticReport = Pipeline(profile=args.profile).analyze_path(
             dataset_path,
             policy_family=args.policy,
             reader=reader,

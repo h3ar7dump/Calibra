@@ -263,7 +263,7 @@ def _react_symbol(delta: Optional[float], key: str) -> str:
     magnitude = abs(delta)
     threshold = 0.001 if key == "jitter_cv" else (0.005 if "rate" in key else 0.1)
     if magnitude < threshold:
-        return "  —"  # no meaningful response
+        return "  -"  # no meaningful response
     worse = (key in _WORSE_IS_HIGHER and delta > 0) or (key in _WORSE_IS_LOWER and delta < 0)
     if worse:
         return " 🔴" if magnitude > threshold * 5 else " 🟡"
@@ -284,7 +284,7 @@ def render_corruption_report(
 
     lines = [
         thick,
-        f"calibra corrupt — {dataset_name}",
+        f"calibra corrupt: {dataset_name}",
         f"Corruptions: {corruption_str}",
         thick,
         "",
@@ -313,7 +313,7 @@ def render_corruption_report(
     lines += [
         divider,
         "",
-        "Legend:  🔴 strong response  🟡 weak response  🟢 improved  — no response",
+        "Legend:  🔴 strong response  🟡 weak response  🟢 improved  - no response",
         "",
     ]
 
@@ -357,6 +357,7 @@ def render_corruption_report(
 def run_corrupt(argv: list[str]) -> None:
     import argparse
 
+    from calibra.analyzers.base import parse_gripper_dims
     from calibra.analyzers.coverage import CoverageEntropyAnalyzer
     from calibra.analyzers.smoothness import ControlSmoothnessAnalyzer
     from calibra.analyzers.task_structure import TaskStructureAnalyzer
@@ -438,10 +439,7 @@ def run_corrupt(argv: list[str]) -> None:
     if cfg.is_empty():
         p.error("Specify at least one corruption flag (e.g. --drop-frames 0.10)")
 
-    gripper_dims: list[int] = [-1]
-    if args.gripper_dims is not None:
-        raw = args.gripper_dims.strip()
-        gripper_dims = [int(x) for x in raw.split(",") if x.strip()] if raw else []
+    gripper_dims = parse_gripper_dims(args.gripper_dims)
 
     reader = None
     if args.format:

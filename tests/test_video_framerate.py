@@ -52,7 +52,9 @@ def _write_test_video(path: Path, n_frames: int = 30, fps: int = 30) -> None:
     pytest.skip("Neither PyAV nor OpenCV is available for writing test videos.")
 
 
-def _make_batch_with_video(video_path: Path, nominal_fps: float = 30.0, n_steps: int = 30) -> EpisodeBatch:
+def _make_batch_with_video(
+    video_path: Path, nominal_fps: float = 30.0, n_steps: int = 30
+) -> EpisodeBatch:
     dt = 1.0 / nominal_fps
     timestamps = np.arange(n_steps, dtype=np.float64) * dt
     actions = np.zeros((n_steps, 6), dtype=np.float32)
@@ -151,4 +153,3 @@ class TestVideoFramerateAnalyzer:
         pipeline = Pipeline(analyzers=[VideoFramerateAnalyzer()])
         report = pipeline.run(batch)
         assert any(r.analyzer_name == "video_framerate" for r in report.analyzer_results)
-
