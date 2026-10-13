@@ -1,0 +1,124 @@
+{
+  "dataset_name": "lumos-original-recording",
+  "source_path": "C:\\Users\\viverrinus\\workspace\\projects\\sceirobotics\\repo\\dojo-qc\\reports\\lumos-original-recording",
+  "format": "lumos",
+  "n_episodes": 1,
+  "n_samples": 3790,
+  "analyzer_results": [
+    {
+      "analyzer_name": "duplicate_frame",
+      "flags": [
+        {
+          "level": "OK",
+          "metric": "duplicate_frame_rate",
+          "observed": {
+            "value": 0.0,
+            "unit": "fraction",
+            "ci_lower": 0.0,
+            "ci_upper": 0.0,
+            "ci_level": 0.95,
+            "ci_method": "bootstrap"
+          },
+          "threshold": 0.05,
+          "interpretation": "Camera frames show expected frame-to-frame variation.",
+          "implication": "No duplicate-frame risk detected.",
+          "affected_fraction": 0.0
+        }
+      ],
+      "hints": [],
+      "raw_metrics": {
+        "duplicate_frame_rate": 0.0,
+        "ci_lower": 0.0,
+        "ci_upper": 0.0,
+        "n_episodes_checked": 1,
+        "episode_values": [
+          0.0
+        ],
+        "outlier_episode_ids": []
+      }
+    },
+    {
+      "analyzer_name": "camera_freeze",
+      "flags": [
+        {
+          "level": "OK",
+          "metric": "camera_freeze_events",
+          "observed": {
+            "value": 0.0,
+            "unit": "fraction",
+            "ci_lower": null,
+            "ci_upper": null,
+            "ci_level": 0.95,
+            "ci_method": ""
+          },
+          "threshold": 1e-9,
+          "interpretation": "No sustained camera-freeze runs detected.",
+          "implication": "No camera-freeze risk detected.",
+          "affected_fraction": 0.0
+        }
+      ],
+      "hints": [],
+      "raw_metrics": {
+        "affected_fraction": 0.0,
+        "n_episodes_checked": 1,
+        "freeze_episodes": []
+      }
+    },
+    {
+      "analyzer_name": "blur",
+      "flags": [
+        {
+          "level": "INFO",
+          "metric": "blurry_episode_fraction",
+          "observed": {
+            "value": null,
+            "unit": "",
+            "ci_lower": null,
+            "ci_upper": null,
+            "ci_level": 0.95,
+            "ci_method": ""
+          },
+          "threshold": null,
+          "interpretation": "Single-episode blur detection needs a sharpness cutoff.",
+          "implication": "Set sharpness_threshold on BlurAnalyzer to run it.",
+          "affected_fraction": null
+        }
+      ],
+      "hints": [],
+      "raw_metrics": {
+        "skipped": "sharpness_threshold required for single episode"
+      }
+    }
+  ],
+  "policy_family": null,
+  "episode_ids": [
+    "EGO_AZEC86400G8_20261009_113030"
+  ],
+  "timing": {
+    "duplicate_frame": 3.4252,
+    "camera_freeze": 0.0002,
+    "blur": 0.0
+  },
+  "skipped_analyzers": [],
+  "ingestion_warnings": [
+    {
+      "level": "WARNING",
+      "metric": "wav_sample_clock_overlap",
+      "episode_id": "EGO_AZEC86400G8_20261009_113030",
+      "previous_segment_index": 1,
+      "segment_index": 2,
+      "overlap_us": 219.33333333333334,
+      "interpretation": "Nominal-rate WAV sample clocks overlap at a segment boundary.",
+      "implication": "Audio samples were not decoded. The nominal WAV rate can differ from the device clock; review audio timing before synchronization or training. No samples or timestamps were changed."
+    }
+  ],
+  "calibra_version": "0.11.0",
+  "analyzer_versions": {
+    "duplicate_frame": "1",
+    "camera_freeze": "1",
+    "blur": "4"
+  },
+  "dataset_profile": null,
+  "config_hash": "cd1052f8308aecd0",
+  "generated_at": "2026-10-13T01:48:45+00:00"
+}

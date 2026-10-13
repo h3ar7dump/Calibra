@@ -238,14 +238,120 @@ def test_rejects_overlapping_parts(tmp_path):
 
 
 @pytest.mark.parametrize("decode_audio", [True, False])
-def test_rejects_audio_sample_overlap_after_last_block_pts(tmp_path, decode_audio):
+def test_audio_sample_overlap_after_last_block_pts(tmp_path, decode_audio):
     episode = make_episode(tmp_path, indices=(1, 2))
     pts = next((episode / "part0002").glob("*audio*_pts.csv"))
     # 60 ms is after the final 42.667 ms block PTS but inside the first WAV's
     # 85.333 ms sample span. Checking only block clocks would miss the overlap.
     pts.write_text(f"timestamp_us\n{ORIGIN + 60000}\n{ORIGIN + 102667}\n")
-    with pytest.raises(ValueError, match="Overlapping WAV sample clocks"):
+    reader = LumosReader(decode_audio=decode_audio)
+    if decode_audio:
+        with pytest.raises(ValueError, match="Overlapping WAV sample clocks"):
+            reader.read(str(episode))
+    else:
+        batch = reader.read(str(episode))
+        warning = batch.extra["ingestion_warnings"][0]
+        assert warning["overlap_us"] == pytest.approx(25312.5)
+        assert warning["episode_id"] == "EGO_test"
+        assert warning["previous_segment_index"] == 1
+        assert warning["segment_index"] == 2
+        assert warning["level"] == "WARNING"
+        assert "audio" not in batch.episodes[0].observations
+        np.testing.assert_allclose(
+            batch.episodes[0].obs_timestamps["audio_pts"], [0, 0.042667, 0.06, 0.102667]
+        )
+
+
+def test_nominal_audio_overlap_with_disjoint_device_metadata(tmp_path):
+    episode = make_episode(tmp_path, indices=(1, 2))
+    audio = next((episode / "part0001").glob("*.wav"))
+    with wave.open(str(audio), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(48000)
+        wav.writeframes(np.zeros(4800, dtype="<i2").tobytes())
+    pts = next((episode / "part0002").glob("*audio*_pts.csv"))
+    pts.write_text(f"timestamp_us\n{ORIGIN + 99760}\n{ORIGIN + 142427}\n")
+
+    def add_device_times(metadata):
+        first, second = metadata["streams"]["audio"]["segments"]
+        first.update(start_timestamp_us=str(ORIGIN), end_timestamp_us=str(ORIGIN + 99739))
+        second.update(start_timestamp_us=str(ORIGIN + 99760))
+
+    edit_metadata(episode, add_device_times)
+    metadata_file = next(episode.glob("meta_*.json"))
+    original = metadata_file.read_bytes()
+    batch = LumosReader().read(str(episode))
+    warning = batch.extra["ingestion_warnings"][0]
+    assert warning["metric"] == "wav_sample_clock_overlap"
+    assert warning["overlap_us"] == pytest.approx(219.1666666667)
+    assert metadata_file.read_bytes() == original
+    assert batch.episodes[0].metadata.extra["audio_segments"][0]["n_samples"] == 4800
+    assert batch.episodes[0].metadata.extra["ingestion_warnings"] == [warning]
+
+
+@pytest.mark.parametrize("decode_audio", [False, True])
+def test_audio_block_overlap_remains_a_structural_error(tmp_path, decode_audio):
+    episode = make_episode(tmp_path, indices=(1, 2))
+    pts = next((episode / "part0002").glob("*audio*_pts.csv"))
+    pts.write_text(f"timestamp_us\n{ORIGIN + 40000}\n{ORIGIN + 82667}\n")
+    with pytest.raises(ValueError, match="non-increasing audio_pts"):
         LumosReader(decode_audio=decode_audio).read(str(episode))
+
+
+def test_ingestion_warnings_survive_pipeline_serialization(tmp_path):
+    episode = make_episode(tmp_path, indices=(1, 2))
+    pts = next((episode / "part0002").glob("*audio*_pts.csv"))
+    pts.write_text(f"timestamp_us\n{ORIGIN + 60000}\n{ORIGIN + 102667}\n")
+    from calibra.schema.report import DiagnosticReport
+
+    report = Pipeline(analyzers=[]).analyze_path(str(episode))
+    restored = DiagnosticReport.model_validate_json(report.model_dump_json())
+    assert restored.ingestion_warnings == report.ingestion_warnings
+    assert restored.ingestion_warnings[0]["overlap_us"] == pytest.approx(25312.5)
+    assert restored.analyzer_results == []
+    assert "wav_sample_clock_overlap" in report.summary()
+
+
+def test_clean_audio_has_no_ingestion_warnings(tmp_path):
+    episode = make_episode(tmp_path, indices=(1, 2))
+    batch = LumosReader().read(str(episode))
+    assert batch.extra["ingestion_warnings"] == []
+    assert all(ep.metadata.extra["ingestion_warnings"] == [] for ep in batch.episodes)
+    assert Pipeline(analyzers=[]).run(batch).ingestion_warnings == []
+
+
+def test_reader_subclasses_can_return_episodes_without_warning_metadata(tmp_path):
+    class ExistingReader(LumosReader):
+        def _read_episode(self, file):
+            episode = super()._read_episode(file)
+            episode.metadata.extra.pop("ingestion_warnings")
+            return episode
+
+    episode = make_episode(tmp_path)
+    assert ExistingReader().read(str(episode)).extra["ingestion_warnings"] == []
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_integrity_exposes_audio_ingestion_warnings(tmp_path, capsys, as_json):
+    episode = make_episode(tmp_path, indices=(1, 2))
+    pts = next((episode / "part0002").glob("*audio*_pts.csv"))
+    pts.write_text(f"timestamp_us\n{ORIGIN + 60000}\n{ORIGIN + 102667}\n")
+    # Keep the master clock uniform so the audio warning is the only new
+    # finding, rather than also triggering the fixture's 60-second video gap.
+    for camera in ("left", "right"):
+        pts = next((episode / "part0002").glob(f"*camera_{camera}*_pts.csv"))
+        start = ORIGIN + 1_000_000 + 99999 + (100 if camera == "right" else 0)
+        pts.write_text("timestamp_us\n" + "".join(f"{start + i * 33333}\n" for i in range(3)))
+    args = [str(episode), "--format", "lumos"] + (["--json"] if as_json else [])
+    with pytest.raises(SystemExit) as result:
+        run_integrity(args)
+    assert result.value.code == 0
+    output = capsys.readouterr().out
+    if as_json:
+        assert json.loads(output)["ingestion_warnings"][0]["overlap_us"] > 0
+    else:
+        assert "wav_sample_clock_overlap" in output
 
 
 @pytest.mark.parametrize("value", ["nan", "inf", "bad"])

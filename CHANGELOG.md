@@ -43,6 +43,14 @@ All notable changes to Calibra are documented here.
 
 ### Fixed
 
+- **Lumos audio sample-clock estimates blocked non-audio diagnostics.**
+  Inferring a whole segment from its first block PTS and nominal WAV rate
+  can overlap the next segment's device clock even when block timestamps
+  are increasing. With audio decoding disabled, these estimates now appear
+  as `ingestion_warnings` in reader metadata, pipeline JSON and integrity
+  output. Decoded audio and non-increasing block PTS remain strict errors.
+  Original PCM, timestamps, analyzer scores and pruning decisions are unchanged.
+
 - **The certify GitHub Actions never failed a job.** In
   `.github/actions/certify` and the reusable `.github/workflows/certify.yml`,
   `$(calibra certify ...) || true` followed by `EXIT_CODE=$?` always read 0, so

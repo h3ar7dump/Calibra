@@ -132,6 +132,7 @@ class DiagnosticReport(BaseModel):
     episode_ids: list[str] = []
     timing: dict[str, float] = {}  # analyzer_name → wall-clock seconds
     skipped_analyzers: list[str] = []  # analyzer_name, skipped: batch lacks required capability
+    ingestion_warnings: list[dict[str, Any]] = []  # reader findings, separate from analyzers
 
     # ── reproducibility metadata ────────────────────────────────────────────
     # Lets a report be checked, not just trusted: "was this the same Calibra
@@ -174,6 +175,13 @@ class DiagnosticReport(BaseModel):
         sorted_flags = sorted(self.flags, key=lambda f: _LEVEL_ORDER[f.level])
         for flag in sorted_flags:
             lines.append(flag.render())
+            lines.append("")
+
+        if self.ingestion_warnings:
+            lines.append("--- Ingestion warnings ---")
+            for warning in self.ingestion_warnings:
+                lines.append(f"{warning['metric']}: {warning['interpretation']}")
+                lines.append(f"   → {warning['implication']}")
             lines.append("")
 
         if self.hints:

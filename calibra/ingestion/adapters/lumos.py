@@ -127,6 +127,8 @@ class LumosReader(DatasetReader):
     resized to at most max_image_size pixels per side (None keeps full size).
     decode_audio=True adds normalized PCM samples and a derived sample clock;
     audio_pts always retains the original block clock in obs_timestamps.
+    Without audio decoding, nominal-rate sample overlaps are retained as
+    ingestion_warnings in episode and batch metadata instead of blocking QC.
     Actions are empty because these recordings contain no robot commands.
     """
 
@@ -172,6 +174,11 @@ class LumosReader(DatasetReader):
             source_path=str(root),
             extra={
                 "video_paths": [p for ep in episodes for p in ep.metadata.extra["video_paths"]],
+                "ingestion_warnings": [
+                    warning
+                    for ep in episodes
+                    for warning in ep.metadata.extra.get("ingestion_warnings", [])
+                ],
                 **({"fps": fps.pop()} if len(fps) == 1 else {}),
             },
         )
@@ -185,6 +192,7 @@ class LumosReader(DatasetReader):
         audio_segments: list[dict[str, Any]] = []
         stream_segments: dict[str, list[dict[str, Any]]] = {}
         audio_segments_clock: list[tuple[int, int, int]] = []
+        ingestion_warnings: list[dict[str, Any]] = []
         fps: float | None = None
         for name, key in _STREAM_KEYS.items():
             stream = metadata["streams"].get(name)
@@ -228,13 +236,35 @@ class LumosReader(DatasetReader):
                     fps = float(stream["fps"]) if stream.get("fps") else None
         if not clocks:
             raise ValueError(f"No enabled sensor data in '{file}'")
-        # WAV headers reveal sample spans even when decoding is disabled. A
-        # following block PTS can be increasing while still overlapping the
-        # previous file's tail. Compare integer deltas to avoid epoch rounding.
-        for previous, current in zip(audio_segments_clock, audio_segments_clock[1:]):
+        # A nominal WAV rate need not match the device clock over an entire
+        # segment. Inferred sample overlap is a finding when PCM is not loaded,
+        # but prevents exposing a non-increasing decoded sample clock. Keep
+        # integer arithmetic so epoch rounding cannot hide small overlaps.
+        for index, (previous, current) in enumerate(
+            zip(audio_segments_clock, audio_segments_clock[1:]), start=1
+        ):
             start, count, rate = previous
-            if (current[0] - start) * rate <= (count - 1) * 1_000_000:
+            overlap = (count - 1) * 1_000_000 - (current[0] - start) * rate
+            if overlap < 0:
+                continue
+            if self.decode_audio:
                 raise ValueError(f"Overlapping WAV sample clocks in '{file}'")
+            ingestion_warnings.append(
+                {
+                    "level": "WARNING",
+                    "metric": "wav_sample_clock_overlap",
+                    "episode_id": file.stem.removeprefix("meta_"),
+                    "previous_segment_index": audio_segments[index - 1]["index"],
+                    "segment_index": audio_segments[index]["index"],
+                    "overlap_us": overlap / rate,
+                    "interpretation": "Nominal-rate WAV sample clocks overlap at a segment boundary.",
+                    "implication": (
+                        "Audio samples were not decoded. The nominal WAV rate can differ "
+                        "from the device clock; review audio timing before synchronization "
+                        "or training. No samples or timestamps were changed."
+                    ),
+                }
+            )
         origin = min(int(ts[0]) for ts in clocks.values())
         obs_timestamps = {
             key: (ts - origin).astype(np.float64) * 1e-6 for key, ts in clocks.items()
@@ -268,6 +298,7 @@ class LumosReader(DatasetReader):
                     "video_paths": [p for paths in video_paths.values() for p in paths],
                     "video_paths_by_camera": video_paths,
                     "audio_segments": audio_segments,
+                    "ingestion_warnings": ingestion_warnings,
                     "calibration_paths": calibration_paths,
                     "fps": fps,
                 },

@@ -27,7 +27,7 @@ data files from directory contents or invent timestamps for missing parts.
 
 Metadata advertises a nominal 60-second segment duration. Actual timestamps
 determine continuity: gaps are retained; repeated timestamps, backwards time
-and overlapping timestamp ranges raise descriptive errors. Local samples
+and overlapping block timestamp ranges raise descriptive errors. Local samples
 contain only `part0001`; multi-part behavior is tested with synthetic recordings.
 
 PTS row counts must match segment `frame_count`. For IMU, that count refers to
@@ -63,6 +63,33 @@ Each other modality retains its own clock and sample count:
 `video_paths_by_camera`, WAV header information (`audio_segments`), and
 `calibration_paths`. Calibration units, transforms and time offsets are
 preserved without applying corrections. IMU physical units are not inferred.
+
+### Audio sample-clock estimates
+
+Audio PTS rows describe blocks, not individual PCM samples. The derived
+sample clock uses each WAV's first PTS and nominal sample rate. Over a long
+segment that rate can differ from the device clock: the inferred end may
+overlap the next segment even when device timestamps remain increasing.
+For example, a recorded 48 kHz segment containing 2,946,179 samples inferred
+a 219.333 microsecond overlap, while its metadata end preceded the next
+segment start by 21 microseconds. This estimate alone does not prove that
+PCM samples were duplicated.
+
+With `decode_audio=False`, the reader keeps the original block clocks and
+WAV header information and records such estimates in
+`EpisodeMetadata.extra["ingestion_warnings"]` and
+`EpisodeBatch.extra["ingestion_warnings"]`. `Pipeline` copies these findings
+to `DiagnosticReport.ingestion_warnings`; JSON reports and `calibra integrity`
+expose them separately from analyzer results. Each warning includes the
+episode ID, the two segment indices, and `overlap_us`, measured from the
+previous segment's inferred final sample to the next segment's first sample.
+No samples or timestamps are trimmed, shifted, or resampled.
+
+With `decode_audio=True`, inferred overlap still raises `ValueError` because
+the returned per-sample clock must be strictly increasing. Missing files,
+inconsistent metadata, and non-increasing block PTS remain errors in both
+modes. Ingestion warnings do not change analyzer scores or integrity CI exit
+codes.
 
 ## Optional decoding
 
@@ -100,3 +127,5 @@ their action metrics. Calibra Score rejects reports missing action-based motion
 analysis, preventing sensor-only recordings from receiving full motion credit.
 Action-dependent quality, pruning and training recommendations are outside
 this reader's supported workflow.
+
+修复原因、文件清单和验证结果见 [Lumos WAV 采样时钟重叠修复记录](lumos-audio-clock-fix.md)。

@@ -345,6 +345,8 @@ def run_integrity(argv: list[str]) -> None:
             "ci_reason": ci_reason,
             "policy_path": args.policy,
         }
+        if report.ingestion_warnings:
+            result["ingestion_warnings"] = report.ingestion_warnings
         print(json.dumps(result, indent=2))
     else:
         print(
@@ -405,6 +407,13 @@ def render(
             lines.append(f"  {icon} {f.metric}: {f.interpretation}{tag}")
             if f.level != RiskLevel.OK:
                 lines.append(f"      {f.implication}")
+        lines.append("")
+
+    if report.ingestion_warnings:
+        lines.append(f"Ingestion Warnings ({len(report.ingestion_warnings)})")
+        for warning in report.ingestion_warnings:
+            lines.append(f"  ⚠️ {warning['metric']}: {warning['interpretation']}")
+            lines.append(f"      {warning['implication']}")
         lines.append("")
 
     if not_evaluated:

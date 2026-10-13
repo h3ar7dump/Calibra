@@ -212,6 +212,7 @@ class Pipeline:
             episode_ids=[ep.metadata.episode_id for ep in batch.episodes],
             timing=timing,
             skipped_analyzers=skipped,
+            ingestion_warnings=batch.extra.get("ingestion_warnings", []),
             calibra_version=calibra_version,
             analyzer_versions=analyzer_versions,
             dataset_profile=profile_name,
