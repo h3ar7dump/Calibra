@@ -33,6 +33,7 @@ from calibra.schema.report import (
     RiskFlag,
     RiskLevel,
 )
+from calibra.vision import find_image_source
 
 # ── thresholds (all times in seconds unless noted) ──────────────────────────
 
@@ -562,17 +563,7 @@ class TemporalAnalyzer(Analyzer):
                     jv_arr = ep.observations[key]
                     break
 
-            img_arr: Optional[np.ndarray] = None
-            for key in ep.observations:
-                if any(kw in key.lower() for kw in _VISUAL_KEYS):
-                    candidate = ep.observations[key]
-                    if (
-                        candidate.ndim in (3, 4)
-                        and candidate.shape[1] >= 8
-                        and candidate.shape[2] >= 8
-                    ):
-                        img_arr = candidate
-                        break
+            img_arr = find_image_source(ep, min_frames=4, min_spatial_size=8)
 
             if jv_arr is None or img_arr is None:
                 continue
@@ -887,13 +878,7 @@ def calibrate_drift_thresholds(
                     jv_arr = ep.observations[key]
                     break
 
-            img_arr: Optional[np.ndarray] = None
-            for key in ep.observations:
-                if any(kw in key.lower() for kw in _VISUAL_KEYS):
-                    candidate = ep.observations[key]
-                    if candidate.ndim in (3, 4) and candidate.shape[1] >= 8:
-                        img_arr = candidate
-                        break
+            img_arr = find_image_source(ep, min_frames=4, min_spatial_size=8)
 
             if jv_arr is None or img_arr is None or len(img_arr) < 4:
                 continue

@@ -202,7 +202,13 @@ of two or three episodes, or larger batches with fewer than four usable image
 episodes, return INFO rather than falling back to the single-episode cutoff.
 
 !!! note "Format coverage"
-    Duplicate-frame, camera-freeze, and blur detection all need decoded image arrays. They work on HDF5-format datasets (Isaac Lab, robomimic-style exports) by default, and on **LeRobot v1, v2, and v3** datasets (HuggingFace `Image`-feature columns and encoded `.mp4` video files) via the opt-in `--decode-images` flag — off by default since decoding increases load time and memory use. When `--decode-images` is omitted on LeRobot datasets, image columns are skipped for performance and these three checks are reported under **Not Evaluated**.
+    Duplicate-frame, camera-freeze, and blur detection require decoded camera pixels. They work on HDF5-format datasets (Isaac Lab and robomimic exports) by default. For **LeRobot v1, v2, v3, and Lumos**, pass `--decode-images`. Without that flag, camera-frame checks are reported under **Not Evaluated**.
+
+    For local LeRobot v2/v3 and Lumos videos, `integrity` decodes frames at their original resolution and caches derived metrics rather than complete video arrays. Pixel memory depends on frame dimensions and decoder buffers, rather than episode length. Consecutive-frame comparisons continue across Lumos segment boundaries. Blur sampling keeps the same episode-wide frame indices and thresholds.
+
+    Every referenced camera stream is decoded and checked against its expected frame count, including streams that no metric selects. Lumos also validates video frame counts against each segment's PTS file.
+
+    The Python readers expose this path through `LeRobotReader(decode_images=True, stream_images=True)` and `LumosReader(decode_images=True, stream_images=True)`. Frames are available through `Episode.image_streams`; the readers' default array API remains available. Lumos preserves the original resolution by default. `max_image_size` resizes frames only when explicitly supplied.
 
 ### Jittery / jerky motion
 

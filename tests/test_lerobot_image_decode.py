@@ -400,6 +400,51 @@ class TestLeRobotV2VideoDecoding:
 
 
 class TestLeRobotV3VideoDecoding:
+    @pytest.mark.parametrize("version", [2, 3])
+    @pytest.mark.parametrize("reader_path", ["duckdb", "pyarrow"])
+    def test_streaming_reports_match_arrays_without_materializing_pixels(
+        self, tmp_path, monkeypatch, version, reader_path
+    ):
+        from calibra.analyzers.camera_view import CameraViewMismatchAnalyzer
+        from calibra.ingestion.adapters import lerobot
+
+        path = (_make_v2_dataset if version == 2 else _make_v3_dataset)(tmp_path, freeze_ep=0)
+        arrays = LeRobotReader(decode_images=True).read(path)
+        analyzers = [
+            DuplicateFrameAnalyzer(),
+            CameraFreezeAnalyzer(),
+            BlurAnalyzer(),
+            CameraViewMismatchAnalyzer(),
+        ]
+        expected = [analyzer.analyze(arrays).model_dump() for analyzer in analyzers]
+        calls = []
+        decode = lerobot._iter_video_frames
+
+        def track_decode(video_path, start_frame=0, num_frames=None):
+            calls.append((str(video_path), start_frame, num_frames))
+            yield from decode(video_path, start_frame, num_frames)
+
+        def unexpected_materialization(*args):
+            raise AssertionError("streaming QC must not build an episode image array")
+
+        monkeypatch.setattr(lerobot, "_iter_video_frames", track_decode)
+        monkeypatch.setattr(lerobot, "_decode_video_frames", unexpected_materialization)
+        reader = LeRobotReader(decode_images=True, stream_images=True)
+        if reader_path == "pyarrow":
+
+            def missing_duckdb(*args):
+                raise ImportError("DuckDB unavailable")
+
+            monkeypatch.setattr(reader, "_build_duckdb_conn", missing_duckdb)
+        batch = reader.read(path)
+        assert calls == []
+        for analyzer, result in zip(analyzers, expected):
+            assert analyzer.analyze(batch).model_dump() == result
+        assert len(calls) == batch.n_episodes  # Scalar caches survive episode eviction.
+        for episode in batch.episodes:
+            assert episode.image_streams
+            assert not any("camera" in key for key in episode.observations)
+
     @pytest.mark.parametrize("reader_path", ["duckdb", "pyarrow", "stream"])
     @pytest.mark.parametrize("task_format", ["parquet", "jsonl"])
     def test_multitask_video_reading_preserves_lazy_decoding(

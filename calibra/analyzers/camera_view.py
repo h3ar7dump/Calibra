@@ -42,6 +42,7 @@ import numpy as np
 
 from calibra.analyzers.base import Analyzer
 from calibra.schema.episode import Episode, EpisodeBatch
+from calibra.schema.images import ImageStream
 from calibra.schema.report import AnalyzerResult, ObservedValue, RiskFlag, RiskLevel
 
 # Image-like observation keys (mirrors EpisodeBatch._IMAGE_TOKENS).
@@ -151,13 +152,16 @@ def declared_viewpoint(key: str) -> str:
 
 def _iter_camera_obs(ep: Episode):
     """Yield (key, images) for every image-like observation stream in `ep`."""
-    for key, arr in ep.observations.items():
-        if any(tok in key.lower() for tok in _IMAGE_TOKENS):
-            if isinstance(arr, np.ndarray) and arr.ndim in (3, 4) and len(arr) >= 2:
-                yield key, arr
+    from calibra.vision import iter_image_sources
+
+    for key, images in iter_image_sources(ep, _IMAGE_TOKENS):
+        if len(images) >= 2:
+            yield key, images
 
 
-def compute_egomotion_correlation(images: np.ndarray, actions: np.ndarray) -> Optional[float]:
+def compute_egomotion_correlation(
+    images: np.ndarray | ImageStream, actions: np.ndarray
+) -> Optional[float]:
     """Pearson correlation between whole-frame visual activity and action motion.
 
     High when the frame moves with the arm (wrist / eye-in-hand camera), low
@@ -166,8 +170,8 @@ def compute_egomotion_correlation(images: np.ndarray, actions: np.ndarray) -> Op
     """
     from calibra.temporal.drift import compute_visual_activity
 
-    imgs = np.asarray(images)
-    if imgs.ndim not in (3, 4) or len(imgs) < _MIN_FRAMES:
+    imgs = images if isinstance(images, ImageStream) else np.asarray(images)
+    if (isinstance(imgs, np.ndarray) and imgs.ndim not in (3, 4)) or len(imgs) < _MIN_FRAMES:
         return None
 
     act = np.asarray(actions, dtype=np.float64)
@@ -244,6 +248,11 @@ class CameraViewMismatchAnalyzer(Analyzer):
     ) -> AnalyzerResult:
         if batch.n_episodes == 0:
             return AnalyzerResult(analyzer_name=self.name)
+        if batch.n_episodes < self.min_episodes:
+            return _skip(
+                f"No camera stream had ≥{self.min_episodes} episodes with usable "
+                "egomotion correlations."
+            )
 
         # Gather per-camera egomotion correlations across episodes.
         per_camera: dict[str, list[float]] = {}

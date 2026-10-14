@@ -12,6 +12,8 @@ from typing import Callable, Iterable, Iterator, Optional, Union
 
 import numpy as np
 
+from calibra.schema.images import ImageStream
+
 
 @dataclass
 class EpisodeMetadata:
@@ -36,6 +38,8 @@ class Episode:
     actions        : shape (T, action_dim), or (0, 0) when commands are absent.
     action_timestamps : when the action log has its own clock; None → use
                         `timestamps`.
+    image_streams  : optional repeatable RGB frame sources for streaming QC.
+                     These retain derived metrics rather than full video pixels.
     """
 
     metadata: EpisodeMetadata
@@ -44,6 +48,7 @@ class Episode:
     actions: np.ndarray  # (T, action_dim)
     obs_timestamps: dict[str, np.ndarray] = field(default_factory=dict)
     action_timestamps: Optional[np.ndarray] = None
+    image_streams: dict[str, ImageStream] = field(default_factory=dict)
 
     @property
     def n_steps(self) -> int:
@@ -155,9 +160,11 @@ class EpisodeBatch:
         if isinstance(self.episodes, LazyEpisodeList) and len(self.episodes) > 0:
             # Probe first episode to avoid materialising all lazy episodes
             keys.update(self.episodes[0].observations.keys())
+            keys.update(self.episodes[0].image_streams)
             return keys
         for ep in self.episodes:
             keys.update(ep.observations.keys())
+            keys.update(ep.image_streams)
         return keys
 
     @property

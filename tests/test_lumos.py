@@ -424,14 +424,15 @@ def test_integrity_cli_supports_forced_format(tmp_path, capsys):
     assert {"check": "control_smoothness", "reason": "requires: actions"} in output["not_evaluated"]
 
 
-def write_video(path: Path, count=3):
+def write_video(path: Path, count=3, width=32, height=24, constant=False):
     av = pytest.importorskip("av")
     with av.open(str(path), "w") as container:
         stream = container.add_stream("mpeg4", rate=30)
-        stream.width, stream.height, stream.pix_fmt = 32, 24, "yuv420p"
+        stream.width, stream.height, stream.pix_fmt = width, height, "yuv420p"
         for i in range(count):
             frame = av.VideoFrame.from_ndarray(
-                np.full((24, 32, 3), i * 50, dtype=np.uint8), format="rgb24"
+                np.full((height, width, 3), 0 if constant else i * 50, dtype=np.uint8),
+                format="rgb24",
             )
             for packet in stream.encode(frame):
                 container.mux(packet)
@@ -457,11 +458,73 @@ def test_rejects_video_pts_count_mismatch(tmp_path):
         LumosReader(decode_images=True).read(str(episode))
 
 
+def test_streaming_lumos_preserves_resolution_and_segment_boundaries(tmp_path, monkeypatch):
+    from calibra.analyzers.camera_freeze import CameraFreezeAnalyzer
+    from calibra.analyzers.duplicate_frame import DuplicateFrameAnalyzer
+
+    episode = make_episode(tmp_path, indices=(1, 2))
+    for path in episode.glob("part*/*.mp4"):
+        write_video(path, width=320, height=260, constant=True)
+    arrays = LumosReader(decode_images=True).read(str(episode))
+    assert arrays.episodes[0].observations["camera_left"].shape == (6, 260, 320, 3)
+    calls = []
+    reader = LumosReader(decode_images=True, stream_images=True)
+    decode = reader._iter_video
+
+    def track_decode(path, expected):
+        calls.append(path)
+        for frame in decode(path, expected):
+            assert frame.shape == (260, 320, 3)
+            yield frame
+
+    def unexpected_materialization(*args):
+        raise AssertionError("streaming Lumos QC must not concatenate video frames")
+
+    monkeypatch.setattr(reader, "_iter_video", track_decode)
+    monkeypatch.setattr(reader, "_read_video", unexpected_materialization)
+    streams = reader.read(str(episode))
+    assert calls == []
+    assert "images" in streams.capabilities
+    assert not any("camera" in key for key in streams.episodes[0].observations)
+    for analyzer in (DuplicateFrameAnalyzer(), CameraFreezeAnalyzer()):
+        assert analyzer.analyze(streams).model_dump() == analyzer.analyze(arrays).model_dump()
+    assert CameraFreezeAnalyzer().analyze(streams).raw_metrics["freeze_episodes"] == [
+        {"episode_id": "EGO_test", "run_length": 5}
+    ]
+    assert len(calls) == 2  # One camera, both segments, shared by the two analyzers.
+
+
+def test_streaming_lumos_rejects_each_segment_frame_count_mismatch(tmp_path):
+    from calibra.analyzers.duplicate_frame import DuplicateFrameAnalyzer
+
+    episode = make_episode(tmp_path, indices=(1, 2))
+    for path in episode.glob("part*/*.mp4"):
+        write_video(path, count=2 if path.parent.name == "part0001" else 4)
+    batch = LumosReader(decode_images=True, stream_images=True).read(str(episode))
+    with pytest.raises(ValueError, match="video/PTS frame mismatch"):
+        DuplicateFrameAnalyzer().analyze(batch)
+
+
+def test_integrity_validates_camera_not_selected_by_metrics(tmp_path, capsys):
+    episode = make_episode(tmp_path)
+    for path in episode.glob("part*/*.mp4"):
+        write_video(path, count=2 if "camera_right" in path.name else 3)
+    with pytest.raises(SystemExit) as result:
+        run_integrity([str(episode), "--decode-images", "--json"])
+    assert result.value.code == 1
+    assert "video/PTS frame mismatch" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("forced", [True, False])
-def test_integrity_cli_decodes_lumos_without_forcing_lerobot(tmp_path, capsys, forced):
+def test_integrity_cli_decodes_lumos_without_forcing_lerobot(tmp_path, capsys, monkeypatch, forced):
     episode = make_episode(tmp_path)
     for path in episode.glob("part*/*.mp4"):
         write_video(path)
+
+    def unexpected_materialization(*args):
+        raise AssertionError("integrity must stream Lumos camera frames")
+
+    monkeypatch.setattr(LumosReader, "_read_video", unexpected_materialization)
     args = [str(episode), "--decode-images", "--json"]
     if forced:
         args += ["--format", "lumos"]

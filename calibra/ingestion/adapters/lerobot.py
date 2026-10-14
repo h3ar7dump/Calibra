@@ -36,6 +36,8 @@ from __future__ import annotations
 
 import io
 import json
+from collections.abc import Iterator
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
@@ -44,6 +46,7 @@ import numpy as np
 from calibra.ingestion.base import DatasetReader
 from calibra.ingestion.registry import register
 from calibra.schema.episode import Episode, EpisodeBatch, EpisodeMetadata
+from calibra.schema.images import ImageStream
 from calibra.schema.normalization import normalize_obs_keys
 
 if TYPE_CHECKING:
@@ -158,15 +161,19 @@ class LeRobotReader(DatasetReader):
                      or video files in `videos/` (v2/v3) into (T, H, W, C) uint8
                      arrays instead of excluding them. Opt-in because it increases
                      load time and memory use.
+    stream_images : if True, expose local v2/v3 videos as repeatable
+                    Episode.image_streams rather than materialized pixel arrays.
     """
 
     def __init__(
         self,
         decode_images: bool = False,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        stream_images: bool = False,
     ) -> None:
         self.decode_images = decode_images
         self.progress_callback = progress_callback
+        self.stream_images = stream_images
 
     @property
     def format_name(self) -> str:
@@ -289,6 +296,7 @@ class LeRobotReader(DatasetReader):
                 video_resolver=video_resolver,
                 progress_callback=self.progress_callback,
                 task_table=task_table,
+                stream_images=self.stream_images,
             )
             return EpisodeBatch(
                 episodes=episodes,
@@ -361,6 +369,7 @@ class LeRobotReader(DatasetReader):
                 video_resolver=video_resolver,
                 progress_callback=self.progress_callback,
                 task_table=task_table,
+                stream_images=self.stream_images,
             )
             return EpisodeBatch(
                 episodes=episodes,
@@ -430,7 +439,13 @@ class LeRobotReader(DatasetReader):
                 f"SELECT * FROM dataset WHERE episode_index = {ep_id} ORDER BY frame_index"
             ).df()
             yield self._episode_from_group(
-                df, ep_id, task, path, video_resolver=video_resolver, task_table=task_table
+                df,
+                ep_id,
+                task,
+                path,
+                video_resolver=video_resolver,
+                task_table=task_table,
+                stream_images=self.stream_images,
             )
 
         conn.close()
@@ -521,6 +536,7 @@ class LeRobotReader(DatasetReader):
         video_resolver: Optional[VideoDatasetResolver] = None,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         task_table: Optional[dict[int, str]] = None,
+        stream_images: bool = False,
     ):
         """Build a LazyEpisodeList that decodes each episode's video frames on-demand."""
         episode_col = "episode_index"
@@ -538,6 +554,9 @@ class LeRobotReader(DatasetReader):
             cum_offsets.append(curr)
             curr += len(grp)
 
+        # Preserve compact camera metrics across the one-episode LRU's eviction.
+        stream_cache: dict[int, dict[str, ImageStream]] = {}
+
         def loader_fn(idx: int) -> Episode:
             ep_id, group = groups[idx]
             if progress_callback:
@@ -550,7 +569,13 @@ class LeRobotReader(DatasetReader):
                 video_resolver=video_resolver,
                 fallback_start_frame=cum_offsets[idx],
                 task_table=task_table,
+                stream_images=stream_images,
             )
+            if stream_images:
+                if idx in stream_cache:
+                    ep.image_streams = stream_cache[idx]
+                else:
+                    stream_cache[idx] = ep.image_streams
             if progress_callback:
                 progress_callback(idx + 1, total_episodes, f"Episode {ep_id}")
             return ep
@@ -612,6 +637,7 @@ class LeRobotReader(DatasetReader):
         video_resolver: Optional[VideoDatasetResolver] = None,
         fallback_start_frame: int = 0,
         task_table: Optional[dict[int, str]] = None,
+        stream_images: bool = False,
     ) -> Episode:
         if "frame_index" in group.columns:
             group = group.sort_values("frame_index")
@@ -652,7 +678,17 @@ class LeRobotReader(DatasetReader):
                         lazy_videos[norm_key] = (v_path, s_frame, n_frames)
 
         norm_raw = normalize_obs_keys(raw_obs)
-        if lazy_videos:
+        image_streams = {}
+        if lazy_videos and stream_images:
+            image_streams = {
+                key: ImageStream(
+                    partial(_iter_video_frames, path, start, count),
+                    count if count is not None else len(timestamps),
+                )
+                for key, (path, start, count) in lazy_videos.items()
+            }
+            obs = norm_raw
+        elif lazy_videos:
             obs = LazyObservationDict(norm_raw, lazy_videos)
         else:
             obs = norm_raw
@@ -667,6 +703,7 @@ class LeRobotReader(DatasetReader):
             timestamps=timestamps,
             observations=obs,
             actions=actions,
+            image_streams=image_streams,
         )
 
 
@@ -742,10 +779,10 @@ class LazyObservationDict(dict):
         return key in self._lazy_videos or super().__contains__(key)
 
     def __iter__(self):
-        return iter(set(super().keys()) | set(self._lazy_videos.keys()))
+        return iter(self.keys())
 
     def keys(self):
-        return set(super().keys()) | set(self._lazy_videos.keys())
+        return sorted(set(super().keys()) | set(self._lazy_videos.keys()))
 
     def items(self):
         for k in self.keys():
@@ -760,6 +797,48 @@ class LazyObservationDict(dict):
             return self[key]
         except KeyError:
             return default
+
+
+def _iter_video_frames(
+    video_path: Path, start_frame: int = 0, num_frames: Optional[int] = None
+) -> Iterator[np.ndarray]:
+    """Decode full-resolution frames without an episode-sized pixel buffer."""
+    backend_name, backend = _require_video_decoder()
+    if backend_name == "av":
+        with backend.open(str(video_path)) as container:
+            if not container.streams.video:
+                raise ValueError(f"No video stream in '{video_path}'")
+            stream = container.streams.video[0]
+            stream.thread_type = "AUTO"
+            end = start_frame + num_frames if num_frames is not None else None
+            for index, frame in enumerate(container.decode(stream)):
+                if end is not None and index >= end:
+                    break
+                if index >= start_frame:
+                    yield frame.to_ndarray(format="rgb24")
+    elif backend_name == "cv2":
+        cap = backend.VideoCapture(str(video_path))
+        try:
+            if not cap.isOpened():
+                raise ValueError(f"Cannot open video '{video_path}'")
+            if start_frame > 0:
+                cap.set(backend.CAP_PROP_POS_FRAMES, start_frame)
+            count = 0
+            while num_frames is None or count < num_frames:
+                success, frame = cap.read()
+                if not success:
+                    break
+                yield backend.cvtColor(frame, backend.COLOR_BGR2RGB)
+                count += 1
+        finally:
+            cap.release()
+    else:
+        end = start_frame + num_frames if num_frames is not None else None
+        for index, frame in enumerate(backend.imiter(str(video_path))):
+            if end is not None and index >= end:
+                break
+            if index >= start_frame:
+                yield np.asarray(frame, dtype=np.uint8)
 
 
 def _decode_video_frames(

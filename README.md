@@ -418,7 +418,7 @@ result = selector.select(batch, report)
 | Command | Description |
 |---|---|
 | `calibra analyze` | One-command report: integrity, Calibra Score, estimated redundancy, and a training-set recommendation |
-| `calibra integrity` | "Can I trust this dataset?" Timestamps, sync, episode completeness, duplicate/frozen/blurry camera frames, jittery/jerky motion (`--decode-images` for LeRobot v1) |
+| `calibra integrity` | "Can I trust this dataset?" Timestamps, sync, episode completeness, duplicate/frozen/blurry camera frames, jittery/jerky motion (`--decode-images` for LeRobot and Lumos) |
 | `calibra audit` | Full diagnostic report with bootstrap CIs and per-episode outlier detection |
 | `calibra review` | Ranked episode review queue: separates anomaly, quality-risk, and coverage-value signals |
 | `calibra prune` | Two-stage coreset: quality filter + greedy max-coverage selection. `--annotate DIR` keeps every episode instead and writes a per-episode decision + characterization sidecar ([Annotate Mode](docs/annotate.md)) |
@@ -507,7 +507,7 @@ pip install 'calibra-robotics[all]'               # everything
 
 Lumos supports single episodes, `meta_*.json` files, and directories of episodes with multiple `partXXXX` segments. Run `calibra integrity datasets/lumos --format lumos`, optionally with `--decode-images` for camera checks. Sensor clocks retain their native rates; robot-action diagnostics are listed as not evaluated.
 
-Camera-frame checks (`duplicate_frame_rate`, `camera_freeze_events`, `blurry_episode_fraction` in `calibra integrity`) work out of the box on HDF5/Isaac Lab/robomimic data, and on LeRobot **v1** datasets via `calibra integrity <path> --decode-images` (opt-in; decodes HuggingFace `Image`-feature columns, off by default since it increases load time/memory). Not yet supported for LeRobot v2/v3 (video-encoded).
+Camera-frame checks (`duplicate_frame_rate`, `camera_freeze_events`, `blurry_episode_fraction` in `calibra integrity`) work on HDF5, Isaac Lab, and robomimic data by default. For LeRobot v1, v2, v3, and Lumos, pass `--decode-images`. Local LeRobot v2/v3 and Lumos videos stream at their original resolution. The checks retain adjacent frames and derived metrics instead of complete video arrays, including across Lumos segments.
 
 ---
 

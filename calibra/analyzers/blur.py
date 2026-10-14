@@ -31,21 +31,16 @@ from calibra.analyzers.base import Analyzer
 from calibra.analyzers.duplicate_frame import _find_image_obs
 from calibra.analyzers.task_structure import _threshold_level_upper
 from calibra.schema.episode import Episode, EpisodeBatch
+from calibra.schema.images import ImageStream
 from calibra.schema.report import AnalyzerResult, ObservedValue, RiskFlag, RiskLevel
+from calibra.vision import frame_laplacian_variance as _frame_laplacian_variance
+from calibra.vision import measure_image_stream
 
 _BLUR_WARNING = 0.05  # 5% of episodes are blur outliers
 _BLUR_CRITICAL = 0.15  # 15%
 
 
-def _frame_laplacian_variance(frame: np.ndarray) -> float:
-    gray = frame.mean(axis=-1).astype(np.float32) if frame.ndim == 3 else frame.astype(np.float32)
-    if gray.shape[0] < 3 or gray.shape[1] < 3:
-        return 0.0
-    lap = gray[1:-1, 2:] + gray[1:-1, :-2] + gray[2:, 1:-1] + gray[:-2, 1:-1] - 4 * gray[1:-1, 1:-1]
-    return float(lap.var())
-
-
-def compute_laplacian_variance(images: np.ndarray) -> np.ndarray:
+def compute_laplacian_variance(images: np.ndarray | ImageStream) -> np.ndarray:
     """
     Per-frame Laplacian variance — a standard, dependency-free blur metric.
 
@@ -59,6 +54,8 @@ def compute_laplacian_variance(images: np.ndarray) -> np.ndarray:
         Variance of the discrete Laplacian response per frame. Lower values
         indicate less high-frequency detail (blurrier frames).
     """
+    if isinstance(images, ImageStream):
+        return measure_image_stream(images).sharpness
     if images.ndim not in (3, 4):
         raise ValueError(f"images must be (T, H, W) or (T, H, W, C), got shape {images.shape}.")
     if len(images) == 0:
@@ -255,14 +252,18 @@ class BlurAnalyzer(Analyzer):
                 episode_values.append(None)
                 continue
             total_sharpness = 0.0
-            for frame in images:
-                sharpness = _frame_laplacian_variance(frame)
-                if not np.isfinite(sharpness):
-                    raise ValueError(
-                        f"non-finite camera sharpness in episode {ep.metadata.episode_id}"
-                    )
-                total_sharpness += sharpness
-            mean_sharpness = total_sharpness / len(images)
+            if isinstance(images, ImageStream):
+                mean_sharpness = measure_image_stream(images, all_sharpness=True).mean_sharpness
+            else:
+                for frame in images:
+                    sharpness = _frame_laplacian_variance(frame)
+                    if not np.isfinite(sharpness):
+                        raise ValueError(
+                            f"non-finite camera sharpness in episode {ep.metadata.episode_id}"
+                        )
+                    total_sharpness += sharpness
+                mean_sharpness = total_sharpness / len(images)
+            assert mean_sharpness is not None
             episode_values.append(mean_sharpness)
             if mean_sharpness < sharpness_threshold:
                 outlier_ids.append(ep.metadata.episode_id)

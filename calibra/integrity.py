@@ -14,7 +14,7 @@ Usage:
     calibra integrity /data/my_demos.h5
     calibra integrity /data/my_demos.h5 --format hdf5
     calibra integrity /data/my_demos.h5 --json
-    calibra integrity lerobot/pusht --decode-images   # v1 LeRobot only, see below
+    calibra integrity ./datasets/lerobot --decode-images
 
 Exit codes:
     0  No block-level CRITICAL findings (or --strict not passed).
@@ -189,7 +189,8 @@ def run_integrity(argv: list[str]) -> None:
         help=(
             "Decode camera frames for LeRobot or Lumos "
             "datasets so duplicate_frame_rate/camera_freeze_events/blurry_episode_fraction "
-            "can run. Increases load time and memory use."
+            "can run. Local LeRobot v2/v3 and Lumos videos stream at their original "
+            "resolution with bounded pixel memory."
         ),
     )
     p.add_argument(
@@ -261,9 +262,11 @@ def run_integrity(argv: list[str]) -> None:
                 type(_get_reader(args.format)) if args.format else detect_reader(dataset_path)
             )
             if reader_type is LumosReader:
-                reader = LumosReader(decode_images=True)
+                reader = LumosReader(decode_images=True, stream_images=True)
             elif reader_type is LeRobotReader:
-                reader = LeRobotReader(decode_images=True, progress_callback=decode_callback)
+                reader = LeRobotReader(
+                    decode_images=True, stream_images=True, progress_callback=decode_callback
+                )
             else:
                 raise ValueError("--decode-images supports LeRobot and Lumos datasets")
         except Exception as exc:
@@ -315,6 +318,11 @@ def run_integrity(argv: list[str]) -> None:
             report = Pipeline(analyzers=analyzers, profile=args.profile).run(
                 batch, progress_callback=check_callback
             )
+            if args.decode_images:
+                log("Validating remaining camera streams ...")
+                for episode in batch.episodes:
+                    for stream in episode.image_streams.values():
+                        stream.validate()
         finally:
             check_pbar.close()
     except Exception as exc:

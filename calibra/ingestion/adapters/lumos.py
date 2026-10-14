@@ -13,6 +13,8 @@ import csv
 import json
 import re
 import wave
+from collections.abc import Iterator
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,7 @@ from numpy.typing import NDArray
 from calibra.ingestion.base import DatasetReader
 from calibra.ingestion.registry import register
 from calibra.schema.episode import Episode, EpisodeBatch, EpisodeMetadata
+from calibra.schema.images import ImageStream
 
 _STREAM_KEYS = {
     "color_left": "camera_left",
@@ -124,7 +127,8 @@ class LumosReader(DatasetReader):
 
     ``observations`` contains native-rate imu_accel / imu_gyro arrays. With
     decode_images=True, camera_left / camera_right contain RGB uint8 frames
-    resized to at most max_image_size pixels per side (None keeps full size).
+    at their original resolution (max_image_size explicitly opts into resizing).
+    stream_images=True exposes repeatable image_streams for bounded-memory QC.
     decode_audio=True adds normalized PCM samples and a derived sample clock;
     audio_pts always retains the original block clock in obs_timestamps.
     Without audio decoding, nominal-rate sample overlaps are retained as
@@ -136,13 +140,15 @@ class LumosReader(DatasetReader):
         self,
         decode_images: bool = False,
         decode_audio: bool = False,
-        max_image_size: int | None = 256,
+        max_image_size: int | None = None,
+        stream_images: bool = False,
     ) -> None:
         if max_image_size is not None and max_image_size < 1:
             raise ValueError("max_image_size must be positive or None")
         self.decode_images = decode_images
         self.decode_audio = decode_audio
         self.max_image_size = max_image_size
+        self.stream_images = stream_images
 
     @property
     def format_name(self) -> str:
@@ -189,6 +195,7 @@ class LumosReader(DatasetReader):
         observations: dict[str, NDArray[Any]] = {}
         clocks: dict[str, NDArray[np.int64]] = {}
         video_paths: dict[str, list[str]] = {}
+        video_parts: dict[str, list[tuple[Path, int]]] = {}
         audio_segments: list[dict[str, Any]] = []
         stream_segments: dict[str, list[dict[str, Any]]] = {}
         audio_segments_clock: list[tuple[int, int, int]] = []
@@ -225,7 +232,10 @@ class LumosReader(DatasetReader):
                     else:
                         video_paths.setdefault(key, []).append(str(media))
                         if self.decode_images:
-                            images.append(self._read_video(media, len(ts)))
+                            if self.stream_images:
+                                video_parts.setdefault(key, []).append((media, len(ts)))
+                            else:
+                                images.append(self._read_video(media, len(ts)))
                 clock_key = "audio_pts" if name == "audio" else key
                 clocks[clock_key] = self._join_clock(timestamps, file, clock_key)
                 if images:
@@ -307,6 +317,10 @@ class LumosReader(DatasetReader):
             observations=observations,
             obs_timestamps=obs_timestamps,
             actions=np.empty((0, 0), dtype=np.float32),
+            image_streams={
+                key: ImageStream(partial(self._iter_video_parts, tuple(parts)), len(clocks[key]))
+                for key, parts in video_parts.items()
+            },
         )
 
     @staticmethod
@@ -383,6 +397,13 @@ class LumosReader(DatasetReader):
             return info, samples.reshape(-1, info["channels"])
 
     def _read_video(self, path: Path, expected: int) -> NDArray[np.uint8]:
+        return np.stack(list(self._iter_video(path, expected)))
+
+    def _iter_video_parts(self, parts: tuple[tuple[Path, int], ...]) -> Iterator[np.ndarray]:
+        for path, expected in parts:
+            yield from self._iter_video(path, expected)
+
+    def _iter_video(self, path: Path, expected: int) -> Iterator[np.ndarray]:
         try:
             import av
         except ImportError:
@@ -390,7 +411,7 @@ class LumosReader(DatasetReader):
                 "PyAV is required to decode Lumos videos. "
                 "Install it with: pip install 'calibra-robotics[lumos]'"
             ) from None
-        frames = []
+        count = 0
         with av.open(str(path)) as container:
             for frame in container.decode(video=0):
                 if self.max_image_size is not None:
@@ -399,10 +420,10 @@ class LumosReader(DatasetReader):
                         width=max(1, round(frame.width * scale)),
                         height=max(1, round(frame.height * scale)),
                     )
-                frames.append(frame.to_ndarray(format="rgb24"))
-        if len(frames) != expected:
+                count += 1
+                yield frame.to_ndarray(format="rgb24")
+        if count != expected:
             raise ValueError(
                 f"Lumos video/PTS frame mismatch in '{path}': "
-                f"decoded={len(frames)}, timestamps={expected}"
+                f"decoded={count}, timestamps={expected}"
             )
-        return np.stack(frames)

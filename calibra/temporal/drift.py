@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import numpy as np
 
+from calibra.schema.images import ImageStream
 
-def compute_visual_activity(images: np.ndarray) -> np.ndarray:
+
+def compute_visual_activity(images: np.ndarray | ImageStream) -> np.ndarray:
     """
     Compute per-frame visual activity magnitude as a proxy for optical flow.
 
@@ -55,6 +57,12 @@ def compute_visual_activity(images: np.ndarray) -> np.ndarray:
     ------
     ValueError  If images has fewer than 2 frames or wrong number of dims.
     """
+    if isinstance(images, ImageStream):
+        from calibra.vision import measure_image_stream
+
+        if len(images) < 2:
+            raise ValueError(f"Need at least 2 frames, got {len(images)}.")
+        return measure_image_stream(images).visual_activity
     if images.ndim not in (3, 4):
         raise ValueError(f"images must be (T, H, W) or (T, H, W, C), got shape {images.shape}.")
     if len(images) < 2:

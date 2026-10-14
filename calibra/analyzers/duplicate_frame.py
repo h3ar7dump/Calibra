@@ -26,7 +26,9 @@ from calibra.analyzers.base import Analyzer
 from calibra.analyzers.task_structure import _threshold_level_upper
 from calibra.analyzers.temporal import _bootstrap_ci
 from calibra.schema.episode import Episode, EpisodeBatch
+from calibra.schema.images import ImageStream
 from calibra.schema.report import AnalyzerResult, ObservedValue, RiskFlag, RiskLevel
+from calibra.vision import find_image_source, measure_image_stream
 
 _VISUAL_KEYS = frozenset(["camera", "image", "rgb", "depth", "visual"])
 
@@ -42,13 +44,8 @@ _DUPLICATE_WARNING = 0.05  # 5% of transitions duplicated
 _DUPLICATE_CRITICAL = 0.15  # 15%
 
 
-def _find_image_obs(ep: Episode, min_frames: int = 2) -> Optional[np.ndarray]:
-    for key in ep.observations:
-        if any(kw in key.lower() for kw in _VISUAL_KEYS):
-            candidate = ep.observations[key]
-            if candidate.ndim in (3, 4) and len(candidate) >= min_frames:  # (T, H, W[, C])
-                return candidate
-    return None
+def _find_image_obs(ep: Episode, min_frames: int = 2) -> np.ndarray | ImageStream | None:
+    return find_image_source(ep, min_frames)
 
 
 def repeated_transitions(
@@ -92,6 +89,8 @@ def _get_or_compute_repeated_transitions(
     images = _find_image_obs(ep)
     if images is None:
         return None
+    if isinstance(images, ImageStream):
+        return measure_image_stream(images, pixel_tolerance, min_changed_fraction).repeated
     settings = (pixel_tolerance, min_changed_fraction)
     cached = getattr(ep, "_cached_repeated_transitions", None)
     if cached is not None and cached[0] is images and cached[1] == settings:
